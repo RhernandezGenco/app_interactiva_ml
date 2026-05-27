@@ -7,6 +7,7 @@ import plotly.express as px
 import streamlit as st
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import export_text
 
 from src.modeling import (
     compare_redundant_features,
@@ -157,6 +158,82 @@ def balance_label_to_strategy(label: str) -> str:
         "Sobremuestreo clase minoritaria": "oversample",
     }
     return mapping[label]
+
+
+def logistic_equation(result, max_terms: int = 12) -> tuple[str, pd.DataFrame]:
+    model = result.pipeline.named_steps["model"]
+    if not hasattr(model, "coef_"):
+        return "", pd.DataFrame()
+
+    coefficients = pd.DataFrame(
+        {
+            "variable_transformada": result.feature_names,
+            "coeficiente": model.coef_[0],
+        }
+    )
+    coefficients["impacto_abs"] = coefficients["coeficiente"].abs()
+    coefficients = coefficients.sort_values("impacto_abs", ascending=False)
+    intercept = float(model.intercept_[0])
+    terms = [
+        f"({row.coeficiente:+.3f} * {row.variable_transformada})"
+        for row in coefficients.head(max_terms).itertuples(index=False)
+    ]
+    equation = f"logit(p) = {intercept:.3f} " + " ".join(terms)
+    return equation, coefficients
+
+
+def decision_tree_rules(result, max_depth: int = 4) -> str:
+    model = result.pipeline.named_steps["model"]
+    if not hasattr(model, "tree_"):
+        return ""
+    names = result.feature_names or [f"feature_{idx}" for idx in range(model.n_features_in_)]
+    return export_text(model, feature_names=names, max_depth=max_depth)
+
+
+def default_prediction_values(df_model: pd.DataFrame, features: list[str], numeric_cols: list[str]) -> pd.DataFrame:
+    values = {}
+    base_features = [col for col in features if not col.endswith("_dup")]
+    for feature in base_features:
+        if feature in numeric_cols or pd.api.types.is_numeric_dtype(df_model[feature]):
+            series = pd.to_numeric(df_model[feature], errors="coerce")
+            values[feature] = float(series.median()) if pd.notna(series.median()) else 0.0
+        else:
+            mode = df_model[feature].astype("string").fillna("Desconocido").mode()
+            values[feature] = str(mode.iloc[0]) if not mode.empty else "Desconocido"
+
+    for feature in features:
+        if feature.endswith("_dup"):
+            source = feature.replace("_dup", "")
+            if source in values:
+                values[feature] = values[source]
+            else:
+                series = pd.to_numeric(df_model[feature], errors="coerce")
+                values[feature] = float(series.median()) if pd.notna(series.median()) else 0.0
+
+    return pd.DataFrame([{feature: values[feature] for feature in features}])
+
+
+def prediction_column_config(df_model: pd.DataFrame, features: list[str], numeric_cols: list[str]) -> dict:
+    config = {}
+    for feature in features:
+        if feature in numeric_cols or feature.endswith("_dup") or pd.api.types.is_numeric_dtype(df_model[feature]):
+            series = pd.to_numeric(df_model[feature], errors="coerce")
+            config[feature] = st.column_config.NumberColumn(
+                feature,
+                help=f"Rango observado: {series.min():.2f} a {series.max():.2f}",
+            )
+        else:
+            options = (
+                df_model[feature]
+                .astype("string")
+                .fillna("Desconocido")
+                .drop_duplicates()
+                .sort_values()
+                .head(200)
+                .tolist()
+            )
+            config[feature] = st.column_config.SelectboxColumn(feature, options=options or ["Desconocido"])
+    return config
 
 
 with st.sidebar:
@@ -442,7 +519,98 @@ questions(
     ]
 )
 
-section("4. Comparaciones rápidas")
+section("4. Usar el modelo para predecir una venta nueva")
+if result is None or config is None:
+    st.info("Primero corre un experimento. La predicción usará exactamente ese modelo entrenado.")
+else:
+    st.markdown(
+        """
+        En la vida real, después de entrenar y validar un modelo, se usa así:
+
+        1. Llega una venta nueva con datos conocidos al momento de vender: país, canal, descuento, días estimados, stock, etc.
+        2. Esos valores pasan por el mismo preprocesamiento usado en entrenamiento: imputación, OneHotEncoder y normalización si aplica.
+        3. El modelo calcula una probabilidad o una clase.
+        4. El negocio usa esa predicción para decidir una acción: revisar la orden, priorizar atención, evitar una devolución o estimar riesgo.
+
+        Importante: no se deben usar columnas que solo se conocen después, como motivo o fecha de devolución.
+        """
+    )
+
+    model_used = result.pipeline.named_steps["model"]
+    st.write("**Cómo decide este modelo**")
+    if config["model_name"] == "Logistic Regression":
+        equation, coefficients = logistic_equation(result)
+        st.write(
+            "Logistic Regression sí tiene una ecuación. La ecuación calcula un puntaje llamado `logit(p)` "
+            "y luego lo convierte en probabilidad con `p = 1 / (1 + exp(-logit))`."
+        )
+        st.code(equation)
+        with st.expander("Ver coeficientes completos", expanded=False):
+            st.dataframe(coefficients.drop(columns=["impacto_abs"]), width="stretch")
+        st.caption(
+            "Coeficientes positivos aumentan la probabilidad de devolución; coeficientes negativos la reducen. "
+            "Si usaste StandardScaler, la ecuación usa variables normalizadas, no los números originales directamente."
+        )
+    elif config["model_name"] == "Decision Tree":
+        st.write(
+            "Decision Tree no usa una sola ecuación lineal. Usa reglas tipo `si descuento > x y entrega_tardia <= y, entonces...`."
+        )
+        with st.expander("Ver reglas principales del árbol", expanded=False):
+            st.code(decision_tree_rules(result, max_depth=4))
+    elif config["model_name"] == "Random Forest":
+        st.write(
+            "Random Forest no tiene una sola ecuación final: entrena muchos árboles y combina sus votos. "
+            "Por eso suele ser potente, pero menos fácil de explicar que una regresión logística o un árbol simple."
+        )
+    else:
+        st.write(
+            "KNN no aprende una ecuación. Para una venta nueva, busca ventas parecidas en el entrenamiento y vota según sus vecinos. "
+            "Por eso la escala de las variables puede cambiar mucho el resultado."
+        )
+
+    st.write("**Simulador de predicción**")
+    with st.form("prediction_form"):
+        st.write("Edita la fila como si fuera una venta nueva. Cada columna es una variable del modelo.")
+        new_row = st.data_editor(
+            default_prediction_values(
+                config["df_model"],
+                config["features"],
+                NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
+            ),
+            column_config=prediction_column_config(
+                config["df_model"],
+                config["features"],
+                NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
+            ),
+            hide_index=True,
+            num_rows="fixed",
+            width="stretch",
+            key="prediction_values_editor",
+        )
+        predict_clicked = st.form_submit_button("Predecir con estos valores", type="primary")
+
+    if predict_clicked:
+        try:
+            pred_class = int(result.pipeline.predict(new_row)[0])
+            pred_label = "Devuelto" if pred_class == 1 else "No devuelto"
+            pred_proba = None
+            if hasattr(result.pipeline, "predict_proba"):
+                pred_proba = float(result.pipeline.predict_proba(new_row)[0, 1])
+
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Predicción", pred_label)
+            p2.metric("Clase", pred_class)
+            p3.metric("Probabilidad de devolución", "N/A" if pred_proba is None else f"{pred_proba:.1%}")
+
+            st.dataframe(new_row, width="stretch")
+            st.write(
+                "Esta es la misma idea que se implementa en producción: una aplicación, API o proceso automático recibe datos nuevos, "
+                "aplica el mismo pipeline y devuelve una predicción para apoyar una decisión."
+            )
+        except Exception as exc:
+            st.error(f"No se pudo predecir con estos valores: {exc}")
+
+section("5. Comparaciones rápidas")
 if config is None:
     st.info("Corre primero un experimento para activar comparaciones.")
 else:
@@ -499,7 +667,7 @@ else:
         except Exception as exc:
             st.warning(f"No se pudo comparar normalización: {exc}")
 
-section("5. Normalización visual")
+section("6. Normalización visual")
 st.write(
     "StandardScaler transforma variables numéricas para que estén en escalas comparables. "
     "Esto suele importar más en KNN y Logistic Regression que en árboles."
@@ -511,7 +679,7 @@ if not before.empty:
     n2.dataframe(after, width="stretch")
     st.plotly_chart(before_after_scaling(before, after), width="stretch", key="scaling_visual")
 
-section("6. Overfitting con Decision Tree")
+section("7. Overfitting con Decision Tree")
 if config is None:
     st.info("Corre primero un experimento.")
 else:
@@ -537,7 +705,7 @@ else:
     except Exception as exc:
         st.warning(f"No se pudo calcular overfitting: {exc}")
 
-section("7. Posible data leakage")
+section("8. Posible data leakage")
 st.write(
     "Data leakage ocurre cuando usamos una variable que no deberíamos conocer al momento de predecir. "
     "Por ejemplo, `fecha_devolucion` o `motivo_devolucion` revelan información posterior a la venta."
@@ -549,7 +717,7 @@ if suspicious:
 else:
     st.success("No se encontraron columnas sospechosas por nombre.")
 
-section("8. Retos para experimentar")
+section("9. Retos para experimentar")
 challenge_cols = st.columns(2)
 challenges = [
     ("Solo numéricas", "Corre un modelo solo con variables numéricas. ¿Qué desempeño obtuviste?"),
