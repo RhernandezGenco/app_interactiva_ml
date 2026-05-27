@@ -8,6 +8,7 @@ import streamlit as st
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import export_text
+from streamlit_sortables import sort_items
 
 from src.modeling import (
     compare_redundant_features,
@@ -59,6 +60,32 @@ st.markdown(
         border-radius: 8px;
         padding: 14px 16px;
         margin: 6px 0 12px 0;
+    }
+    .chip-container {display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;}
+    .chip {
+        display: inline-block;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 7px 11px;
+        color: #1f2937;
+        font-size: .92rem;
+        font-weight: 600;
+    }
+    .badge-ok {
+        background: #dcfce7;
+        color: #166534;
+        border: 1px solid #86efac;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: .88rem;
+    }
+    .badge-warn {
+        background: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fcd34d;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: .88rem;
     }
     .section-rule {border-top: 1px solid #e5e7eb; margin: 1.4rem 0 1rem 0;}
     </style>
@@ -158,6 +185,355 @@ def balance_label_to_strategy(label: str) -> str:
         "Sobremuestreo clase minoritaria": "oversample",
     }
     return mapping[label]
+
+
+def flow_steps() -> list[dict]:
+    return [
+        {
+            "title": "DWH",
+            "icon": "🏢",
+            "short": "Fuente histórica de datos",
+            "why": "Centraliza ventas, clientes, productos y devoluciones para analizarlos.",
+            "input": ["Ventas históricas", "Clientes", "Productos", "Devoluciones"],
+            "process": ["Almacenar información", "Consolidar datos históricos"],
+            "output": ["Datos disponibles para análisis"],
+            "example": ["ventas_2025", "clientes", "productos", "devoluciones"],
+        },
+        {
+            "title": "Dataset",
+            "icon": "🧾",
+            "short": "Tabla o CSV para entrenar",
+            "why": "Convierte muchas tablas en una tabla de trabajo con filas y columnas.",
+            "input": ["Tablas o consulta SQL"],
+            "process": ["Extraer columnas relevantes", "Convertir a CSV o tabla de trabajo"],
+            "output": ["Dataset con filas y columnas para modelar"],
+            "example": ["1 fila = 1 venta", "columnas = pais, descuento, devuelto"],
+        },
+        {
+            "title": "Limpieza",
+            "icon": "🧹",
+            "short": "Preparar variables",
+            "why": "El modelo necesita datos consistentes y sin errores obvios.",
+            "input": ["Dataset crudo"],
+            "process": ["convertir tipos", "imputar nulos", "quitar errores", "seleccionar features", "separar target"],
+            "output": ["X (features)", "y (target)", "datos listos para modelar"],
+            "example": ['pais = "Guate " -> "Guatemala"', 'descuento = "0.1" -> 0.10', "target = devuelto"],
+        },
+        {
+            "title": "Train/Test",
+            "icon": "✂️",
+            "short": "Separar para aprender y evaluar",
+            "why": "Simula datos no vistos para medir si el modelo generaliza.",
+            "input": ["X", "y"],
+            "process": ["dividir datos"],
+            "output": ["X_train", "X_test", "y_train", "y_test"],
+            "example": ["1000 filas", "800 train", "200 test"],
+        },
+        {
+            "title": "Modelo",
+            "icon": "🧠",
+            "short": "Aprender patrones",
+            "why": "Encuentra relaciones entre features y devoluciones.",
+            "input": ["X_train", "y_train"],
+            "process": ["entrenar algoritmo"],
+            "output": ["modelo entrenado"],
+            "example": ["Random Forest aprende reglas", "Logistic Regression aprende coeficientes"],
+        },
+        {
+            "title": "Resultados",
+            "icon": "📈",
+            "short": "Medir desempeño",
+            "why": "Ayuda a decidir si el modelo sirve antes de usarlo en la vida real.",
+            "input": ["modelo", "X_test", "y_test"],
+            "process": ["generar predicciones", "calcular métricas"],
+            "output": ["accuracy", "precision", "recall", "F1", "matriz de confusión"],
+            "example": ["recall = 0.72", "F1 = 0.68", "matriz de confusión"],
+        },
+        {
+            "title": "Predicción",
+            "icon": "🔮",
+            "short": "Predecir venta nueva",
+            "why": "Usa lo aprendido para estimar el riesgo de una venta nueva.",
+            "input": ["una venta nueva"],
+            "process": ["pasarla por el mismo pipeline", "aplicar modelo"],
+            "output": ["predicción 0/1", "probabilidad"],
+            "example": ["canal = Online", "descuento = 0.25", "dias_entrega = 8", "probabilidad devolución = 0.72"],
+        },
+        {
+            "title": "Decisión",
+            "icon": "✅",
+            "short": "Actuar con el resultado",
+            "why": "Convierte la predicción en una acción de negocio.",
+            "input": ["predicción del modelo"],
+            "process": ["interpretar resultado"],
+            "output": ["priorizar revisión", "alertar riesgo", "tomar acción de negocio"],
+            "example": ["si riesgo > 70%", "revisar orden", "contactar cliente"],
+        },
+    ]
+
+
+def render_flow_diagram(steps: list[dict]) -> None:
+    for idx, step in enumerate(steps):
+        with st.container(border=True):
+            c1, c2 = st.columns([0.12, 0.88])
+            c1.markdown(f"### {step['icon']}")
+            c2.markdown(f"**{idx + 1}. {step['title']}**")
+            c2.caption(step["short"])
+        if idx < len(steps) - 1:
+            st.markdown("<div style='text-align:center;color:#64748b;font-size:1.4rem;'>↓</div>", unsafe_allow_html=True)
+
+
+def render_chips(items: list[str], color: str = "#eef6ff") -> None:
+    chips = "".join(
+        f"<span class='chip' style='background:{color};'>{str(item)}</span>"
+        for item in items
+    )
+    st.markdown(f"<div class='chip-container'>{chips}</div>", unsafe_allow_html=True)
+
+
+def render_io_block(title: str, icon: str, items: list[str], color: str) -> None:
+    with st.container(border=True):
+        st.markdown(f"**{icon} {title}**")
+        render_chips(items, color=color)
+
+
+def render_stage_io_card(stage: dict) -> None:
+    st.markdown(f"### {stage['icon']} {stage['title']}")
+    st.write(stage["why"])
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_io_block("Entrada", "📥", stage["input"], "#eff6ff")
+    with c2:
+        render_io_block("Proceso", "⚙️", stage["process"], "#f8fafc")
+    with c3:
+        render_io_block("Salida", "📤", stage["output"], "#f0fdf4")
+
+    st.write("**Ejemplo rápido**")
+    render_chips(stage["example"], color="#fff7ed")
+
+
+def render_flow_explanation(steps: list[dict]) -> None:
+    for step in steps:
+        with st.expander(f"{step['icon']} {step['title']}"):
+            render_stage_io_card(step)
+
+
+def initial_flow_containers(steps: list[dict]) -> list[dict]:
+    shuffled = ["Modelo", "DWH", "Predicción", "Limpieza", "Resultados", "Dataset", "Decisión", "Train/Test"]
+    available = [item for item in shuffled if item in [step["title"] for step in steps]]
+    return [
+        {"header": "Etapas disponibles", "items": available},
+        {"header": "Tu flujo", "items": []},
+    ]
+
+
+def validate_flow_order(user_order: list[str], correct_order: list[str]) -> tuple[int, pd.DataFrame]:
+    rows = []
+    for idx, expected in enumerate(correct_order):
+        selected = user_order[idx] if idx < len(user_order) else "(vacío)"
+        ok = selected == expected
+        rows.append(
+            {
+                "posición": idx + 1,
+                "tu_etapa": selected,
+                "etapa_correcta": expected,
+                "estado": "Correcto" if ok else "Revisar",
+            }
+        )
+    return sum(row["estado"] == "Correcto" for row in rows), pd.DataFrame(rows)
+
+
+def render_flow_sortable_challenge(steps: list[dict]) -> None:
+    correct_order = [step["title"] for step in steps]
+    if "flow_reset_counter" not in st.session_state:
+        st.session_state.flow_reset_counter = 0
+    if "flow_validation" not in st.session_state:
+        st.session_state.flow_validation = None
+
+    st.write("Pista: primero necesitamos datos históricos, luego limpiarlos, después entrenar, evaluar y finalmente usar el modelo.")
+    custom_style = """
+    .sortable-component {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 8px;
+        background: #ffffff;
+    }
+    .sortable-container {
+        background-color: #f8fafc;
+        border-radius: 10px;
+        min-height: 260px;
+    }
+    .sortable-container-header {
+        background-color: #e0f2fe;
+        color: #0f172a;
+        font-weight: 700;
+        border-radius: 8px 8px 0 0;
+        padding: .55rem .75rem;
+    }
+    .sortable-item, .sortable-item:hover {
+        background-color: #ffffff;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        color: #1f2937;
+        font-weight: 650;
+        margin: 6px;
+        padding: 10px;
+    }
+    """
+    containers = sort_items(
+        initial_flow_containers(steps),
+        multi_containers=True,
+        direction="horizontal",
+        custom_style=custom_style,
+        key=f"flow_sortable_{st.session_state.flow_reset_counter}",
+    )
+    st.session_state.flow_current_containers = containers
+    user_flow = containers[1]["items"] if len(containers) > 1 else []
+
+    b1, b2 = st.columns([1, 1])
+    if b1.button("Validar flujo", type="primary"):
+        score, feedback = validate_flow_order(user_flow, correct_order)
+        st.session_state.flow_validation = {"score": score, "feedback": feedback}
+        st.session_state.flow_progress = score
+    if b2.button("Reintentar"):
+        st.session_state.flow_reset_counter += 1
+        st.session_state.flow_validation = None
+        st.rerun()
+
+    validation = st.session_state.flow_validation
+    if validation:
+        score = validation["score"]
+        st.metric("Puntaje", f"{score}/8")
+        st.progress(score / 8)
+        styled = validation["feedback"].style.apply(
+            lambda row: ["background-color: #dcfce7" if row["estado"] == "Correcto" else "background-color: #fef3c7"] * len(row),
+            axis=1,
+        )
+        st.dataframe(styled, width="stretch", hide_index=True)
+        if score >= 7:
+            st.success("Muy bien, ya entendés casi todo el flujo.")
+        elif score >= 4:
+            st.info("Vas bien. Revisá qué pasa antes del modelo y qué pasa después de resultados.")
+        else:
+            st.warning("Revisá el orden: datos históricos → limpieza → entrenamiento/evaluación → uso en producción.")
+
+
+def render_stage_io(steps: list[dict]) -> None:
+    selected = st.selectbox("Elige una etapa", [step["title"] for step in steps], key="flow_stage_selector")
+    step = next(item for item in steps if item["title"] == selected)
+    render_stage_io_card(step)
+
+
+def render_training_vs_production() -> None:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            """
+            <div class="concept-box">
+            <h4>Entrenamiento</h4>
+            <ul>
+            <li>Tenemos datos históricos.</li>
+            <li>Sí conocemos el target <code>devuelto</code>.</li>
+            <li>Dividimos train/test.</li>
+            <li>Medimos métricas.</li>
+            <li>Ajustamos parámetros.</li>
+            </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            """
+            <div class="concept-box">
+            <h4>Producción</h4>
+            <ul>
+            <li>Llega una venta nueva.</li>
+            <li>No conocemos el target real todavía.</li>
+            <li>Usamos el pipeline ya entrenado.</li>
+            <li>Hacemos una predicción.</li>
+            <li>Usamos la predicción para decidir.</li>
+            </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.warning("En entrenamiento el modelo aprende. En producción el modelo ya no está aprendiendo, solo está usando lo que aprendió.")
+
+
+def render_complete_flow_challenge(steps: list[dict]) -> None:
+    st.write("Completa los espacios vacíos del flujo. Algunas etapas ya están fijas para guiarte.")
+    fixed_positions = {0: "DWH", 2: "Limpieza", 4: "Modelo", 7: "Decisión"}
+    options = ["Selecciona..."] + [step["title"] for step in steps]
+    score = 0
+    answers = {}
+
+    for idx, step in enumerate(steps):
+        with st.container(border=True):
+            if idx in fixed_positions:
+                st.markdown(f"**{idx + 1}. {step['icon']} {step['title']}**")
+                st.caption(step["short"])
+                st.markdown("<span class='badge-ok'>Etapa fija</span>", unsafe_allow_html=True)
+                score += 1
+            else:
+                selected = st.selectbox(
+                    f"Paso {idx + 1}",
+                    options,
+                    key=f"complete_flow_step_{idx}",
+                )
+                answers[idx] = selected
+                if selected != "Selecciona...":
+                    chosen_step = next((item for item in steps if item["title"] == selected), None)
+                    if chosen_step:
+                        st.caption(chosen_step["short"])
+                if selected == step["title"]:
+                    st.markdown("<span class='badge-ok'>Correcto</span>", unsafe_allow_html=True)
+                    score += 1
+                elif selected != "Selecciona...":
+                    st.markdown("<span class='badge-warn'>Revisar posición</span>", unsafe_allow_html=True)
+
+        if idx < len(steps) - 1:
+            st.markdown("<div style='text-align:center;color:#64748b;font-size:1.4rem;'>↓</div>", unsafe_allow_html=True)
+
+    if st.button("Validar flujo completado", type="primary"):
+        st.session_state.complete_flow_score = score
+        st.session_state.complete_flow_answers = answers
+
+    if "complete_flow_score" in st.session_state:
+        final_score = st.session_state.complete_flow_score
+        st.metric("Puntaje del flujo", f"{final_score}/8")
+        st.progress(final_score / 8)
+        if final_score == 8:
+            st.success("Flujo completo. Ya entendés el viaje desde datos históricos hasta decisión.")
+        elif final_score >= 5:
+            st.info("Vas bien. Revisa qué pasa antes del modelo y qué pasa después de resultados.")
+        else:
+            st.warning("Repasa el orden completo: DWH → Dataset → Limpieza → Train/Test → Modelo → Resultados → Predicción → Decisión.")
+
+
+def render_model_data_flow_section() -> None:
+    steps = flow_steps()
+    section(
+        "Flujo de datos del modelo",
+        "Mini laboratorio visual para entender cómo los datos históricos terminan en una predicción real.",
+    )
+    flow_tab, sort_tab, io_tab, complete_tab = st.tabs(
+        ["Vista completa", "Ordena el flujo", "Entrada / Proceso / Salida", "Completa el flujo"]
+    )
+    with flow_tab:
+        render_flow_diagram(steps)
+        if st.button("Ver explicación del flujo"):
+            st.session_state.show_flow_explanation = not st.session_state.get("show_flow_explanation", False)
+        if st.session_state.get("show_flow_explanation", False):
+            render_flow_explanation(steps)
+        st.subheader("Entrenamiento vs Producción")
+        render_training_vs_production()
+    with sort_tab:
+        render_flow_sortable_challenge(steps)
+    with io_tab:
+        render_stage_io(steps)
+    with complete_tab:
+        render_complete_flow_challenge(steps)
 
 
 def logistic_equation(result, max_terms: int = 12) -> tuple[str, pd.DataFrame]:
@@ -263,473 +639,479 @@ st.caption(source_label)
 for warning in dataset_warnings:
     st.warning(warning)
 
-intro_left, intro_right = st.columns([1.2, 1])
-with intro_left:
-    st.markdown(
-        """
-        <div class="concept-box">
-        <b>Objetivo:</b> jugar con variables, normalización, split, modelo y balanceo para ver cómo cambian los resultados.
-        <br><br>
-        Queremos predecir si una venta será devuelta usando información como canal, país, descuento,
-        días de entrega, categoría, margen, stock y rating del cliente.
-        </div>
-        """,
-        unsafe_allow_html=True,
+main_lab_tab, main_flow_tab = st.tabs(["Modelo de clasificación", "Flujo de datos del modelo"])
+
+with main_flow_tab:
+    render_model_data_flow_section()
+
+with main_lab_tab:
+    intro_left, intro_right = st.columns([1.2, 1])
+    with intro_left:
+        st.markdown(
+            """
+            <div class="concept-box">
+            <b>Objetivo:</b> jugar con variables, normalización, split, modelo y balanceo para ver cómo cambian los resultados.
+            <br><br>
+            Queremos predecir si una venta será devuelta usando información como canal, país, descuento,
+            días de entrega, categoría, margen, stock y rating del cliente.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Filas", f"{df.shape[0]:,}")
+        c2.metric("Columnas", f"{df.shape[1]:,}")
+        c3.metric("Variables numéricas", len(numeric_available))
+        c4.metric("Variables categóricas", len(categorical_available))
+    with intro_right:
+        st.plotly_chart(target_distribution(df), width="stretch", key="target_distribution_top")
+
+    section("1. Mira los datos antes de elegir variables")
+    explore_left, explore_right = st.columns([1.15, 1])
+    with explore_left:
+        st.write("**Matriz de correlación de variables numéricas**")
+        st.plotly_chart(correlation_heatmap(df), width="stretch", key="correlation_before_selection")
+    with explore_right:
+        st.write("**Varianza y escala de cada variable numérica**")
+        variance_df = variance_table(df, numeric_available)
+        st.dataframe(variance_df, width="stretch", height=430)
+        st.write(
+            "Una variable con varianza muy baja cambia poco. Una variable con escala enorme puede dominar modelos como KNN si no normalizamos."
+        )
+
+    with st.expander("Ver primeras filas, nulos y tipos de datos", expanded=False):
+        d1, d2 = st.columns([1.2, 1])
+        d1.dataframe(df.head(20), width="stretch")
+        d2.plotly_chart(missing_values(df), width="stretch", key="missing_values")
+        st.dataframe(df.dtypes.astype(str).reset_index().rename(columns={"index": "columna", 0: "tipo"}), width="stretch")
+
+    pairs = high_correlation_pairs(df, threshold=0.85)
+    st.write("**Pares con correlación alta (> 0.85)**")
+    st.dataframe(
+        pairs if not pairs.empty else pd.DataFrame({"mensaje": ["No se encontraron pares sobre 0.85."]}),
+        width="stretch",
     )
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Filas", f"{df.shape[0]:,}")
-    c2.metric("Columnas", f"{df.shape[1]:,}")
-    c3.metric("Variables numéricas", len(numeric_available))
-    c4.metric("Variables categóricas", len(categorical_available))
-with intro_right:
-    st.plotly_chart(target_distribution(df), width="stretch", key="target_distribution_top")
-
-section("1. Mira los datos antes de elegir variables")
-explore_left, explore_right = st.columns([1.15, 1])
-with explore_left:
-    st.write("**Matriz de correlación de variables numéricas**")
-    st.plotly_chart(correlation_heatmap(df), width="stretch", key="correlation_before_selection")
-with explore_right:
-    st.write("**Varianza y escala de cada variable numérica**")
-    variance_df = variance_table(df, numeric_available)
-    st.dataframe(variance_df, width="stretch", height=430)
-    st.write(
-        "Una variable con varianza muy baja cambia poco. Una variable con escala enorme puede dominar modelos como KNN si no normalizamos."
-    )
-
-with st.expander("Ver primeras filas, nulos y tipos de datos", expanded=False):
-    d1, d2 = st.columns([1.2, 1])
-    d1.dataframe(df.head(20), width="stretch")
-    d2.plotly_chart(missing_values(df), width="stretch", key="missing_values")
-    st.dataframe(df.dtypes.astype(str).reset_index().rename(columns={"index": "columna", 0: "tipo"}), width="stretch")
-
-pairs = high_correlation_pairs(df, threshold=0.85)
-st.write("**Pares con correlación alta (> 0.85)**")
-st.dataframe(
-    pairs if not pairs.empty else pd.DataFrame({"mensaje": ["No se encontraron pares sobre 0.85."]}),
-    width="stretch",
-)
-questions(
-    [
-        "¿Qué variables parecen repetidas?",
-        "¿Qué variables tienen una escala mucho más grande?",
-        "¿Qué variables crees que ayudarán a predecir devoluciones?",
-    ]
-)
-
-section("2. Configura tu experimento")
-st.write("Elige variables y parámetros. El modelo no corre hasta que presiones **Correr experimento**.")
-
-config_left, config_mid, config_right = st.columns([1.1, 1, 1])
-with config_left:
-    st.write("**Variables predictoras**")
-    variable_preset = st.radio(
-        "Selección rápida",
-        ["Todas", "Solo numéricas", "Solo categóricas", "Personalizado"],
-        horizontal=True,
-    )
-    if variable_preset == "Todas":
-        default_num = numeric_available
-        default_cat = categorical_available
-    elif variable_preset == "Solo numéricas":
-        default_num = numeric_available
-        default_cat = []
-    elif variable_preset == "Solo categóricas":
-        default_num = []
-        default_cat = categorical_available
-    else:
-        default_num = ["rating_cliente", "descuento", "venta_neta", "margen_gtq", "dias_entrega", "entrega_tardia", "stock_disponible"]
-        default_num = [col for col in default_num if col in numeric_available]
-        default_cat = ["pais", "canal", "categoria", "metodo_pago", "promocion", "prioridad_envio"]
-        default_cat = [col for col in default_cat if col in categorical_available]
-
-    selected_numeric = st.multiselect(
-        "Variables numéricas",
-        numeric_available,
-        default=default_num,
-        help="Puedes elegir una, varias o ninguna.",
-    )
-    selected_categorical = st.multiselect(
-        "Variables categóricas",
-        categorical_available,
-        default=default_cat,
-        help="Se transforman con OneHotEncoder.",
-    )
-    include_redundant = st.checkbox("Agregar variables redundantes/correlacionadas", value=False)
-
-with config_mid:
-    st.write("**Split y preprocesamiento**")
-    train_pct = st.slider("% entrenamiento", 50, 90, 80, 5)
-    test_size = (100 - train_pct) / 100
-    st.plotly_chart(split_bar(train_pct, 100 - train_pct), width="stretch", key="split_config")
-    scaling_choice = st.radio(
-        "Técnica de normalizado",
-        ["Sin normalización", "StandardScaler"],
-        index=1,
-        help="StandardScaler deja media cercana a 0 y desviación estándar cercana a 1.",
-    )
-    use_scaling = scaling_choice == "StandardScaler"
-    balance_label = st.radio(
-        "Balanceo de datos",
-        ["Sin balanceo", "Class weight balanced", "Sobremuestreo clase minoritaria"],
-        index=1,
-    )
-    balance_strategy = balance_label_to_strategy(balance_label)
-    random_state = st.number_input("Random state", value=42, step=1)
-
-with config_right:
-    st.write("**Modelo y parámetros**")
-    model_name = st.selectbox("Modelo", ["Logistic Regression", "KNN", "Decision Tree", "Random Forest"], index=3)
-    model_params = {}
-    if model_name == "Random Forest":
-        model_params["n_estimators"] = st.slider("n_estimators", 50, 400, 150, 10)
-        rf_depth = st.slider("max_depth", 2, 30, 10, 1)
-        model_params["max_depth"] = None if st.checkbox("Sin límite de profundidad") else rf_depth
-        model_params["min_samples_leaf"] = st.slider("min_samples_leaf RF", 1, 20, 1, 1)
-    elif model_name == "Decision Tree":
-        model_params["max_depth"] = st.slider("max_depth", 1, 30, 6, 1)
-        model_params["min_samples_leaf"] = st.slider("min_samples_leaf", 1, 20, 3, 1)
-    elif model_name == "KNN":
-        model_params["n_neighbors"] = st.slider("n_neighbors", 1, 25, 5, 1)
-        if balance_strategy == "class_weight":
-            st.warning("KNN no usa class_weight. Prueba sobremuestreo si quieres balancearlo.")
-    else:
-        model_params["C"] = st.slider("C", 0.05, 5.0, 1.0, 0.05)
-
-df_model = add_redundant_features(df, int(random_state)) if include_redundant else df.copy()
-redundant_cols = [col for col in df_model.columns if col.endswith("_dup")]
-selected_features = selected_numeric + selected_categorical + redundant_cols
-
-summary_cols = st.columns(5)
-summary_cols[0].metric("Features elegidas", len(selected_features))
-summary_cols[1].metric("Numéricas", len(selected_numeric) + len(redundant_cols))
-summary_cols[2].metric("Categóricas", len(selected_categorical))
-summary_cols[3].metric("Train", f"{train_pct}%")
-summary_cols[4].metric("Test", f"{100 - train_pct}%")
-
-with st.expander("Ver variables seleccionadas y su correlación", expanded=True):
-    st.write(selected_features if selected_features else "No has elegido variables.")
-    selected_numeric_for_corr = [col for col in selected_numeric + redundant_cols if col in df_model.columns]
-    if selected_numeric_for_corr:
-        st.plotly_chart(correlation_heatmap(df_model[selected_numeric_for_corr + [TARGET]]), width="stretch", key="selected_corr")
-    if selected_numeric:
-        selected_variance = variance_table(df_model, [col for col in selected_numeric if col in df_model.columns])
-        st.dataframe(selected_variance, width="stretch")
-
-run_clicked = st.button("Correr experimento", type="primary", disabled=not selected_features)
-if run_clicked:
-    with st.spinner("Entrenando con las variables y parámetros elegidos..."):
-        try:
-            result = cached_train(
-                df_model,
-                selected_features,
-                model_name,
-                use_scaling,
-                float(test_size),
-                int(random_state),
-                model_params,
-                balance_strategy,
-            )
-            st.session_state["last_result"] = result
-            st.session_state["last_config"] = {
-                "features": selected_features,
-                "model_name": model_name,
-                "use_scaling": use_scaling,
-                "test_size": test_size,
-                "random_state": int(random_state),
-                "model_params": model_params,
-                "balance_strategy": balance_strategy,
-                "balance_label": balance_label,
-                "include_redundant": include_redundant,
-                "df_model": df_model,
-            }
-            st.session_state["last_error"] = None
-        except Exception as exc:
-            st.session_state["last_result"] = None
-            st.session_state["last_error"] = str(exc)
-
-if st.session_state.get("last_error"):
-    st.error(f"No se pudo entrenar: {st.session_state['last_error']}")
-
-result = st.session_state.get("last_result")
-config = st.session_state.get("last_config")
-
-section("3. Resultados del último experimento")
-if result is None:
-    st.info("Ajusta las opciones y presiona **Correr experimento** para ver resultados.")
-else:
-    cfg_text = (
-        f"Modelo: **{config['model_name']}** · "
-        f"Normalización: **{'StandardScaler' if config['use_scaling'] else 'No'}** · "
-        f"Balanceo: **{config['balance_label']}** · "
-        f"Features: **{len(config['features'])}** · "
-        f"Test: **{config['test_size']:.0%}**"
-    )
-    st.markdown(cfg_text)
-    metric_row(result.metrics)
-
-    b1, b2 = st.columns(2)
-    before_balance = result.metrics["train_distribution_before"]
-    after_balance = result.metrics["train_distribution_after"]
-    balance_df = pd.DataFrame(
+    questions(
         [
-            {"momento": "Antes de balancear", "clase": str(k), "filas": v}
-            for k, v in before_balance.items()
-        ]
-        + [
-            {"momento": "Después de balancear", "clase": str(k), "filas": v}
-            for k, v in after_balance.items()
+            "¿Qué variables parecen repetidas?",
+            "¿Qué variables tienen una escala mucho más grande?",
+            "¿Qué variables crees que ayudarán a predecir devoluciones?",
         ]
     )
-    with b1:
-        st.write("**Distribución del entrenamiento antes/después del balanceo**")
-        st.plotly_chart(px.bar(balance_df, x="clase", y="filas", color="momento", barmode="group"), width="stretch", key="balance_plot")
-    with b2:
-        st.write("**Matriz de confusión**")
-        st.plotly_chart(confusion_matrix_plot(result.confusion), width="stretch", key="confusion_results")
 
-    st.write(
-        "**Cómo leerlo:** si sube el recall, el modelo detecta más devoluciones reales. "
-        "Pero si baja mucho la precision, también puede estar marcando demasiadas ventas como devolución."
-    )
+    section("2. Configura tu experimento")
+    st.write("Elige variables y parámetros. El modelo no corre hasta que presiones **Correr experimento**.")
 
-    r1, r2 = st.columns([1, 1])
-    with r1:
-        if result.roc is not None:
-            st.write("**Curva ROC**")
-            st.plotly_chart(roc_curve_plot(result.roc), width="stretch", key="roc_results")
-    with r2:
-        st.write("**Classification report**")
-        st.code(result.report)
-
-    try:
-        importance = compute_feature_importance(result, int(config["random_state"]))
-        st.write("**Top 10 variables más importantes**")
-        i1, i2 = st.columns([1.2, 1])
-        i1.plotly_chart(feature_importance_plot(importance), width="stretch", key="importance_results")
-        i2.dataframe(importance, width="stretch")
-    except Exception as exc:
-        st.warning(f"No se pudo calcular importancia de variables: {exc}")
-
-questions(
-    [
-        "¿Cambió más accuracy, recall o precision?",
-        "¿El balanceo ayudó a detectar más devoluciones?",
-        "¿El modelo generaliza o solo parece bueno en una métrica?",
-    ]
-)
-
-section("4. Usar el modelo para predecir una venta nueva")
-if result is None or config is None:
-    st.info("Primero corre un experimento. La predicción usará exactamente ese modelo entrenado.")
-else:
-    st.markdown(
-        """
-        En la vida real, después de entrenar y validar un modelo, se usa así:
-
-        1. Llega una venta nueva con datos conocidos al momento de vender: país, canal, descuento, días estimados, stock, etc.
-        2. Esos valores pasan por el mismo preprocesamiento usado en entrenamiento: imputación, OneHotEncoder y normalización si aplica.
-        3. El modelo calcula una probabilidad o una clase.
-        4. El negocio usa esa predicción para decidir una acción: revisar la orden, priorizar atención, evitar una devolución o estimar riesgo.
-
-        Importante: no se deben usar columnas que solo se conocen después, como motivo o fecha de devolución.
-        """
-    )
-
-    model_used = result.pipeline.named_steps["model"]
-    st.write("**Cómo decide este modelo**")
-    if config["model_name"] == "Logistic Regression":
-        equation, coefficients = logistic_equation(result)
-        st.write(
-            "Logistic Regression sí tiene una ecuación. La ecuación calcula un puntaje llamado `logit(p)` "
-            "y luego lo convierte en probabilidad con `p = 1 / (1 + exp(-logit))`."
+    config_left, config_mid, config_right = st.columns([1.1, 1, 1])
+    with config_left:
+        st.write("**Variables predictoras**")
+        variable_preset = st.radio(
+            "Selección rápida",
+            ["Todas", "Solo numéricas", "Solo categóricas", "Personalizado"],
+            horizontal=True,
         )
-        st.code(equation)
-        with st.expander("Ver coeficientes completos", expanded=False):
-            st.dataframe(coefficients.drop(columns=["impacto_abs"]), width="stretch")
-        st.caption(
-            "Coeficientes positivos aumentan la probabilidad de devolución; coeficientes negativos la reducen. "
-            "Si usaste StandardScaler, la ecuación usa variables normalizadas, no los números originales directamente."
+        if variable_preset == "Todas":
+            default_num = numeric_available
+            default_cat = categorical_available
+        elif variable_preset == "Solo numéricas":
+            default_num = numeric_available
+            default_cat = []
+        elif variable_preset == "Solo categóricas":
+            default_num = []
+            default_cat = categorical_available
+        else:
+            default_num = ["rating_cliente", "descuento", "venta_neta", "margen_gtq", "dias_entrega", "entrega_tardia", "stock_disponible"]
+            default_num = [col for col in default_num if col in numeric_available]
+            default_cat = ["pais", "canal", "categoria", "metodo_pago", "promocion", "prioridad_envio"]
+            default_cat = [col for col in default_cat if col in categorical_available]
+
+        selected_numeric = st.multiselect(
+            "Variables numéricas",
+            numeric_available,
+            default=default_num,
+            help="Puedes elegir una, varias o ninguna.",
         )
-    elif config["model_name"] == "Decision Tree":
-        st.write(
-            "Decision Tree no usa una sola ecuación lineal. Usa reglas tipo `si descuento > x y entrega_tardia <= y, entonces...`."
+        selected_categorical = st.multiselect(
+            "Variables categóricas",
+            categorical_available,
+            default=default_cat,
+            help="Se transforman con OneHotEncoder.",
         )
-        with st.expander("Ver reglas principales del árbol", expanded=False):
-            st.code(decision_tree_rules(result, max_depth=4))
-    elif config["model_name"] == "Random Forest":
-        st.write(
-            "Random Forest no tiene una sola ecuación final: entrena muchos árboles y combina sus votos. "
-            "Por eso suele ser potente, pero menos fácil de explicar que una regresión logística o un árbol simple."
+        include_redundant = st.checkbox("Agregar variables redundantes/correlacionadas", value=False)
+
+    with config_mid:
+        st.write("**Split y preprocesamiento**")
+        train_pct = st.slider("% entrenamiento", 50, 90, 80, 5)
+        test_size = (100 - train_pct) / 100
+        st.plotly_chart(split_bar(train_pct, 100 - train_pct), width="stretch", key="split_config")
+        scaling_choice = st.radio(
+            "Técnica de normalizado",
+            ["Sin normalización", "StandardScaler"],
+            index=1,
+            help="StandardScaler deja media cercana a 0 y desviación estándar cercana a 1.",
         )
+        use_scaling = scaling_choice == "StandardScaler"
+        balance_label = st.radio(
+            "Balanceo de datos",
+            ["Sin balanceo", "Class weight balanced", "Sobremuestreo clase minoritaria"],
+            index=1,
+        )
+        balance_strategy = balance_label_to_strategy(balance_label)
+        random_state = st.number_input("Random state", value=42, step=1)
+
+    with config_right:
+        st.write("**Modelo y parámetros**")
+        model_name = st.selectbox("Modelo", ["Logistic Regression", "KNN", "Decision Tree", "Random Forest"], index=3)
+        model_params = {}
+        if model_name == "Random Forest":
+            model_params["n_estimators"] = st.slider("n_estimators", 50, 400, 150, 10)
+            rf_depth = st.slider("max_depth", 2, 30, 10, 1)
+            model_params["max_depth"] = None if st.checkbox("Sin límite de profundidad") else rf_depth
+            model_params["min_samples_leaf"] = st.slider("min_samples_leaf RF", 1, 20, 1, 1)
+        elif model_name == "Decision Tree":
+            model_params["max_depth"] = st.slider("max_depth", 1, 30, 6, 1)
+            model_params["min_samples_leaf"] = st.slider("min_samples_leaf", 1, 20, 3, 1)
+        elif model_name == "KNN":
+            model_params["n_neighbors"] = st.slider("n_neighbors", 1, 25, 5, 1)
+            if balance_strategy == "class_weight":
+                st.warning("KNN no usa class_weight. Prueba sobremuestreo si quieres balancearlo.")
+        else:
+            model_params["C"] = st.slider("C", 0.05, 5.0, 1.0, 0.05)
+
+    df_model = add_redundant_features(df, int(random_state)) if include_redundant else df.copy()
+    redundant_cols = [col for col in df_model.columns if col.endswith("_dup")]
+    selected_features = selected_numeric + selected_categorical + redundant_cols
+
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Features elegidas", len(selected_features))
+    summary_cols[1].metric("Numéricas", len(selected_numeric) + len(redundant_cols))
+    summary_cols[2].metric("Categóricas", len(selected_categorical))
+    summary_cols[3].metric("Train", f"{train_pct}%")
+    summary_cols[4].metric("Test", f"{100 - train_pct}%")
+
+    with st.expander("Ver variables seleccionadas y su correlación", expanded=True):
+        st.write(selected_features if selected_features else "No has elegido variables.")
+        selected_numeric_for_corr = [col for col in selected_numeric + redundant_cols if col in df_model.columns]
+        if selected_numeric_for_corr:
+            st.plotly_chart(correlation_heatmap(df_model[selected_numeric_for_corr + [TARGET]]), width="stretch", key="selected_corr")
+        if selected_numeric:
+            selected_variance = variance_table(df_model, [col for col in selected_numeric if col in df_model.columns])
+            st.dataframe(selected_variance, width="stretch")
+
+    run_clicked = st.button("Correr experimento", type="primary", disabled=not selected_features)
+    if run_clicked:
+        with st.spinner("Entrenando con las variables y parámetros elegidos..."):
+            try:
+                result = cached_train(
+                    df_model,
+                    selected_features,
+                    model_name,
+                    use_scaling,
+                    float(test_size),
+                    int(random_state),
+                    model_params,
+                    balance_strategy,
+                )
+                st.session_state["last_result"] = result
+                st.session_state["last_config"] = {
+                    "features": selected_features,
+                    "model_name": model_name,
+                    "use_scaling": use_scaling,
+                    "test_size": test_size,
+                    "random_state": int(random_state),
+                    "model_params": model_params,
+                    "balance_strategy": balance_strategy,
+                    "balance_label": balance_label,
+                    "include_redundant": include_redundant,
+                    "df_model": df_model,
+                }
+                st.session_state["last_error"] = None
+            except Exception as exc:
+                st.session_state["last_result"] = None
+                st.session_state["last_error"] = str(exc)
+
+    if st.session_state.get("last_error"):
+        st.error(f"No se pudo entrenar: {st.session_state['last_error']}")
+
+    result = st.session_state.get("last_result")
+    config = st.session_state.get("last_config")
+
+    section("3. Resultados del último experimento")
+    if result is None:
+        st.info("Ajusta las opciones y presiona **Correr experimento** para ver resultados.")
     else:
+        cfg_text = (
+            f"Modelo: **{config['model_name']}** · "
+            f"Normalización: **{'StandardScaler' if config['use_scaling'] else 'No'}** · "
+            f"Balanceo: **{config['balance_label']}** · "
+            f"Features: **{len(config['features'])}** · "
+            f"Test: **{config['test_size']:.0%}**"
+        )
+        st.markdown(cfg_text)
+        metric_row(result.metrics)
+
+        b1, b2 = st.columns(2)
+        before_balance = result.metrics["train_distribution_before"]
+        after_balance = result.metrics["train_distribution_after"]
+        balance_df = pd.DataFrame(
+            [
+                {"momento": "Antes de balancear", "clase": str(k), "filas": v}
+                for k, v in before_balance.items()
+            ]
+            + [
+                {"momento": "Después de balancear", "clase": str(k), "filas": v}
+                for k, v in after_balance.items()
+            ]
+        )
+        with b1:
+            st.write("**Distribución del entrenamiento antes/después del balanceo**")
+            st.plotly_chart(px.bar(balance_df, x="clase", y="filas", color="momento", barmode="group"), width="stretch", key="balance_plot")
+        with b2:
+            st.write("**Matriz de confusión**")
+            st.plotly_chart(confusion_matrix_plot(result.confusion), width="stretch", key="confusion_results")
+
         st.write(
-            "KNN no aprende una ecuación. Para una venta nueva, busca ventas parecidas en el entrenamiento y vota según sus vecinos. "
-            "Por eso la escala de las variables puede cambiar mucho el resultado."
+            "**Cómo leerlo:** si sube el recall, el modelo detecta más devoluciones reales. "
+            "Pero si baja mucho la precision, también puede estar marcando demasiadas ventas como devolución."
         )
 
-    st.write("**Simulador de predicción**")
-    with st.form("prediction_form"):
-        st.write("Edita la fila como si fuera una venta nueva. Cada columna es una variable del modelo.")
-        new_row = st.data_editor(
-            default_prediction_values(
-                config["df_model"],
-                config["features"],
-                NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
-            ),
-            column_config=prediction_column_config(
-                config["df_model"],
-                config["features"],
-                NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
-            ),
-            hide_index=True,
-            num_rows="fixed",
-            width="stretch",
-            key="prediction_values_editor",
-        )
-        predict_clicked = st.form_submit_button("Predecir con estos valores", type="primary")
+        r1, r2 = st.columns([1, 1])
+        with r1:
+            if result.roc is not None:
+                st.write("**Curva ROC**")
+                st.plotly_chart(roc_curve_plot(result.roc), width="stretch", key="roc_results")
+        with r2:
+            st.write("**Classification report**")
+            st.code(result.report)
 
-    if predict_clicked:
         try:
-            pred_class = int(result.pipeline.predict(new_row)[0])
-            pred_label = "Devuelto" if pred_class == 1 else "No devuelto"
-            pred_proba = None
-            if hasattr(result.pipeline, "predict_proba"):
-                pred_proba = float(result.pipeline.predict_proba(new_row)[0, 1])
-
-            p1, p2, p3 = st.columns(3)
-            p1.metric("Predicción", pred_label)
-            p2.metric("Clase", pred_class)
-            p3.metric("Probabilidad de devolución", "N/A" if pred_proba is None else f"{pred_proba:.1%}")
-
-            st.dataframe(new_row, width="stretch")
-            st.write(
-                "Esta es la misma idea que se implementa en producción: una aplicación, API o proceso automático recibe datos nuevos, "
-                "aplica el mismo pipeline y devuelve una predicción para apoyar una decisión."
-            )
+            importance = compute_feature_importance(result, int(config["random_state"]))
+            st.write("**Top 10 variables más importantes**")
+            i1, i2 = st.columns([1.2, 1])
+            i1.plotly_chart(feature_importance_plot(importance), width="stretch", key="importance_results")
+            i2.dataframe(importance, width="stretch")
         except Exception as exc:
-            st.error(f"No se pudo predecir con estos valores: {exc}")
+            st.warning(f"No se pudo calcular importancia de variables: {exc}")
 
-section("5. Comparaciones rápidas")
-if config is None:
-    st.info("Corre primero un experimento para activar comparaciones.")
-else:
-    comp_left, comp_right = st.columns(2)
-    with comp_left:
-        st.write("**Con vs. sin variables redundantes**")
+    questions(
+        [
+            "¿Cambió más accuracy, recall o precision?",
+            "¿El balanceo ayudó a detectar más devoluciones?",
+            "¿El modelo generaliza o solo parece bueno en una métrica?",
+        ]
+    )
+
+    section("4. Usar el modelo para predecir una venta nueva")
+    if result is None or config is None:
+        st.info("Primero corre un experimento. La predicción usará exactamente ese modelo entrenado.")
+    else:
+        st.markdown(
+            """
+            En la vida real, después de entrenar y validar un modelo, se usa así:
+
+            1. Llega una venta nueva con datos conocidos al momento de vender: país, canal, descuento, días estimados, stock, etc.
+            2. Esos valores pasan por el mismo preprocesamiento usado en entrenamiento: imputación, OneHotEncoder y normalización si aplica.
+            3. El modelo calcula una probabilidad o una clase.
+            4. El negocio usa esa predicción para decidir una acción: revisar la orden, priorizar atención, evitar una devolución o estimar riesgo.
+
+            Importante: no se deben usar columnas que solo se conocen después, como motivo o fecha de devolución.
+            """
+        )
+
+        model_used = result.pipeline.named_steps["model"]
+        st.write("**Cómo decide este modelo**")
+        if config["model_name"] == "Logistic Regression":
+            equation, coefficients = logistic_equation(result)
+            st.write(
+                "Logistic Regression sí tiene una ecuación. La ecuación calcula un puntaje llamado `logit(p)` "
+                "y luego lo convierte en probabilidad con `p = 1 / (1 + exp(-logit))`."
+            )
+            st.code(equation)
+            with st.expander("Ver coeficientes completos", expanded=False):
+                st.dataframe(coefficients.drop(columns=["impacto_abs"]), width="stretch")
+            st.caption(
+                "Coeficientes positivos aumentan la probabilidad de devolución; coeficientes negativos la reducen. "
+                "Si usaste StandardScaler, la ecuación usa variables normalizadas, no los números originales directamente."
+            )
+        elif config["model_name"] == "Decision Tree":
+            st.write(
+                "Decision Tree no usa una sola ecuación lineal. Usa reglas tipo `si descuento > x y entrega_tardia <= y, entonces...`."
+            )
+            with st.expander("Ver reglas principales del árbol", expanded=False):
+                st.code(decision_tree_rules(result, max_depth=4))
+        elif config["model_name"] == "Random Forest":
+            st.write(
+                "Random Forest no tiene una sola ecuación final: entrena muchos árboles y combina sus votos. "
+                "Por eso suele ser potente, pero menos fácil de explicar que una regresión logística o un árbol simple."
+            )
+        else:
+            st.write(
+                "KNN no aprende una ecuación. Para una venta nueva, busca ventas parecidas en el entrenamiento y vota según sus vecinos. "
+                "Por eso la escala de las variables puede cambiar mucho el resultado."
+            )
+
+        st.write("**Simulador de predicción**")
+        with st.form("prediction_form"):
+            st.write("Edita la fila como si fuera una venta nueva. Cada columna es una variable del modelo.")
+            new_row = st.data_editor(
+                default_prediction_values(
+                    config["df_model"],
+                    config["features"],
+                    NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
+                ),
+                column_config=prediction_column_config(
+                    config["df_model"],
+                    config["features"],
+                    NUMERIC_FEATURES + [col for col in config["features"] if col.endswith("_dup")],
+                ),
+                hide_index=True,
+                num_rows="fixed",
+                width="stretch",
+                key="prediction_values_editor",
+            )
+            predict_clicked = st.form_submit_button("Predecir con estos valores", type="primary")
+
+        if predict_clicked:
+            try:
+                pred_class = int(result.pipeline.predict(new_row)[0])
+                pred_label = "Devuelto" if pred_class == 1 else "No devuelto"
+                pred_proba = None
+                if hasattr(result.pipeline, "predict_proba"):
+                    pred_proba = float(result.pipeline.predict_proba(new_row)[0, 1])
+
+                p1, p2, p3 = st.columns(3)
+                p1.metric("Predicción", pred_label)
+                p2.metric("Clase", pred_class)
+                p3.metric("Probabilidad de devolución", "N/A" if pred_proba is None else f"{pred_proba:.1%}")
+
+                st.dataframe(new_row, width="stretch")
+                st.write(
+                    "Esta es la misma idea que se implementa en producción: una aplicación, API o proceso automático recibe datos nuevos, "
+                    "aplica el mismo pipeline y devuelve una predicción para apoyar una decisión."
+                )
+            except Exception as exc:
+                st.error(f"No se pudo predecir con estos valores: {exc}")
+
+    section("5. Comparaciones rápidas")
+    if config is None:
+        st.info("Corre primero un experimento para activar comparaciones.")
+    else:
+        comp_left, comp_right = st.columns(2)
+        with comp_left:
+            st.write("**Con vs. sin variables redundantes**")
+            try:
+                comparison = compare_redundant_features(
+                    df,
+                    add_redundant_features(df, int(config["random_state"])),
+                    [col for col in config["features"] if not col.endswith("_dup")],
+                    config["model_name"],
+                    config["use_scaling"],
+                    float(config["test_size"]),
+                    int(config["random_state"]),
+                    balance_strategy=config["balance_strategy"],
+                )
+                st.plotly_chart(metrics_comparison(comparison), width="stretch", key="redundant_comparison")
+                st.dataframe(comparison, width="stretch")
+            except Exception as exc:
+                st.warning(f"No se pudo comparar redundancia: {exc}")
+
+        with comp_right:
+            st.write("**Con vs. sin normalización**")
+            try:
+                res_no = cached_train(
+                    config["df_model"],
+                    config["features"],
+                    config["model_name"],
+                    False,
+                    float(config["test_size"]),
+                    int(config["random_state"]),
+                    config["model_params"],
+                    config["balance_strategy"],
+                )
+                res_yes = cached_train(
+                    config["df_model"],
+                    config["features"],
+                    config["model_name"],
+                    True,
+                    float(config["test_size"]),
+                    int(config["random_state"]),
+                    config["model_params"],
+                    config["balance_strategy"],
+                )
+                norm_df = pd.DataFrame(
+                    [
+                        {"experimento": "Sin normalización", **{k: res_no.metrics[k] for k in ["accuracy", "precision", "recall", "f1"]}},
+                        {"experimento": "Con StandardScaler", **{k: res_yes.metrics[k] for k in ["accuracy", "precision", "recall", "f1"]}},
+                    ]
+                )
+                st.plotly_chart(metrics_comparison(norm_df), width="stretch", key="normalization_comparison")
+                st.dataframe(norm_df, width="stretch")
+            except Exception as exc:
+                st.warning(f"No se pudo comparar normalización: {exc}")
+
+    section("6. Normalización visual")
+    st.write(
+        "StandardScaler transforma variables numéricas para que estén en escalas comparables. "
+        "Esto suele importar más en KNN y Logistic Regression que en árboles."
+    )
+    before, after = scaling_stats(df, ["precio_unitario", "venta_neta", "rating_cliente", "dias_entrega"])
+    if not before.empty:
+        n1, n2 = st.columns(2)
+        n1.dataframe(before, width="stretch")
+        n2.dataframe(after, width="stretch")
+        st.plotly_chart(before_after_scaling(before, after), width="stretch", key="scaling_visual")
+
+    section("7. Overfitting con Decision Tree")
+    if config is None:
+        st.info("Corre primero un experimento.")
+    else:
+        max_depth_limit = st.slider("Profundidad máxima para probar overfitting", 1, 20, 20, 1)
+        leaf_value = st.slider("min_samples_leaf para overfitting", 1, 20, 3, 1)
         try:
-            comparison = compare_redundant_features(
-                df,
-                add_redundant_features(df, int(config["random_state"])),
-                [col for col in config["features"] if not col.endswith("_dup")],
-                config["model_name"],
+            curve = overfitting_curve(
+                config["df_model"],
+                config["features"],
                 config["use_scaling"],
                 float(config["test_size"]),
                 int(config["random_state"]),
+                int(leaf_value),
+                int(max_depth_limit),
                 balance_strategy=config["balance_strategy"],
             )
-            st.plotly_chart(metrics_comparison(comparison), width="stretch", key="redundant_comparison")
-            st.dataframe(comparison, width="stretch")
+            o1, o2 = st.columns([1.2, 1])
+            o1.plotly_chart(overfitting_line(curve), width="stretch", key="overfitting_curve")
+            best_row = curve.sort_values("accuracy_test", ascending=False).iloc[0]
+            o2.metric("Mejor profundidad test", int(best_row["max_depth"]))
+            o2.metric("Mejor accuracy test", f"{best_row['accuracy_test']:.3f}")
+            o2.dataframe(curve, width="stretch", height=320)
         except Exception as exc:
-            st.warning(f"No se pudo comparar redundancia: {exc}")
+            st.warning(f"No se pudo calcular overfitting: {exc}")
 
-    with comp_right:
-        st.write("**Con vs. sin normalización**")
-        try:
-            res_no = cached_train(
-                config["df_model"],
-                config["features"],
-                config["model_name"],
-                False,
-                float(config["test_size"]),
-                int(config["random_state"]),
-                config["model_params"],
-                config["balance_strategy"],
-            )
-            res_yes = cached_train(
-                config["df_model"],
-                config["features"],
-                config["model_name"],
-                True,
-                float(config["test_size"]),
-                int(config["random_state"]),
-                config["model_params"],
-                config["balance_strategy"],
-            )
-            norm_df = pd.DataFrame(
-                [
-                    {"experimento": "Sin normalización", **{k: res_no.metrics[k] for k in ["accuracy", "precision", "recall", "f1"]}},
-                    {"experimento": "Con StandardScaler", **{k: res_yes.metrics[k] for k in ["accuracy", "precision", "recall", "f1"]}},
-                ]
-            )
-            st.plotly_chart(metrics_comparison(norm_df), width="stretch", key="normalization_comparison")
-            st.dataframe(norm_df, width="stretch")
-        except Exception as exc:
-            st.warning(f"No se pudo comparar normalización: {exc}")
+    section("8. Posible data leakage")
+    st.write(
+        "Data leakage ocurre cuando usamos una variable que no deberíamos conocer al momento de predecir. "
+        "Por ejemplo, `fecha_devolucion` o `motivo_devolucion` revelan información posterior a la venta."
+    )
+    suspicious = find_leakage_columns(df)
+    if suspicious:
+        st.error("Cuidado: estas columnas podrían revelar la respuesta y hacer que el modelo parezca mejor de lo real.")
+        st.write(suspicious)
+    else:
+        st.success("No se encontraron columnas sospechosas por nombre.")
 
-section("6. Normalización visual")
-st.write(
-    "StandardScaler transforma variables numéricas para que estén en escalas comparables. "
-    "Esto suele importar más en KNN y Logistic Regression que en árboles."
-)
-before, after = scaling_stats(df, ["precio_unitario", "venta_neta", "rating_cliente", "dias_entrega"])
-if not before.empty:
-    n1, n2 = st.columns(2)
-    n1.dataframe(before, width="stretch")
-    n2.dataframe(after, width="stretch")
-    st.plotly_chart(before_after_scaling(before, after), width="stretch", key="scaling_visual")
-
-section("7. Overfitting con Decision Tree")
-if config is None:
-    st.info("Corre primero un experimento.")
-else:
-    max_depth_limit = st.slider("Profundidad máxima para probar overfitting", 1, 20, 20, 1)
-    leaf_value = st.slider("min_samples_leaf para overfitting", 1, 20, 3, 1)
-    try:
-        curve = overfitting_curve(
-            config["df_model"],
-            config["features"],
-            config["use_scaling"],
-            float(config["test_size"]),
-            int(config["random_state"]),
-            int(leaf_value),
-            int(max_depth_limit),
-            balance_strategy=config["balance_strategy"],
-        )
-        o1, o2 = st.columns([1.2, 1])
-        o1.plotly_chart(overfitting_line(curve), width="stretch", key="overfitting_curve")
-        best_row = curve.sort_values("accuracy_test", ascending=False).iloc[0]
-        o2.metric("Mejor profundidad test", int(best_row["max_depth"]))
-        o2.metric("Mejor accuracy test", f"{best_row['accuracy_test']:.3f}")
-        o2.dataframe(curve, width="stretch", height=320)
-    except Exception as exc:
-        st.warning(f"No se pudo calcular overfitting: {exc}")
-
-section("8. Posible data leakage")
-st.write(
-    "Data leakage ocurre cuando usamos una variable que no deberíamos conocer al momento de predecir. "
-    "Por ejemplo, `fecha_devolucion` o `motivo_devolucion` revelan información posterior a la venta."
-)
-suspicious = find_leakage_columns(df)
-if suspicious:
-    st.error("Cuidado: estas columnas podrían revelar la respuesta y hacer que el modelo parezca mejor de lo real.")
-    st.write(suspicious)
-else:
-    st.success("No se encontraron columnas sospechosas por nombre.")
-
-section("9. Retos para experimentar")
-challenge_cols = st.columns(2)
-challenges = [
-    ("Solo numéricas", "Corre un modelo solo con variables numéricas. ¿Qué desempeño obtuviste?"),
-    ("Numéricas + categóricas", "Agrega categóricas. ¿Mejoró el resultado?"),
-    ("Correlacionadas", "Activa variables redundantes. ¿Mejoró o solo aumentó complejidad?"),
-    ("Balanceo", "Compara sin balanceo vs sobremuestreo. ¿Qué pasó con recall?"),
-    ("Normalización", "Usa KNN con y sin StandardScaler. ¿Qué cambió?"),
-    ("Split", "Cambia train de 80% a 60%. ¿Cambian mucho las métricas?"),
-    ("Overfitting", "Sube max_depth en Decision Tree. ¿Train sube más que test?"),
-    ("Importancia", "Identifica las 5 variables más importantes. ¿Tiene sentido de negocio?"),
-]
-for idx, (title, text) in enumerate(challenges):
-    with challenge_cols[idx % 2]:
-        done = st.checkbox(title, key=f"challenge_{idx}")
-        st.caption(text if not done else f"Completado. {text}")
+    section("9. Retos para experimentar")
+    challenge_cols = st.columns(2)
+    challenges = [
+        ("Solo numéricas", "Corre un modelo solo con variables numéricas. ¿Qué desempeño obtuviste?"),
+        ("Numéricas + categóricas", "Agrega categóricas. ¿Mejoró el resultado?"),
+        ("Correlacionadas", "Activa variables redundantes. ¿Mejoró o solo aumentó complejidad?"),
+        ("Balanceo", "Compara sin balanceo vs sobremuestreo. ¿Qué pasó con recall?"),
+        ("Normalización", "Usa KNN con y sin StandardScaler. ¿Qué cambió?"),
+        ("Split", "Cambia train de 80% a 60%. ¿Cambian mucho las métricas?"),
+        ("Overfitting", "Sube max_depth en Decision Tree. ¿Train sube más que test?"),
+        ("Importancia", "Identifica las 5 variables más importantes. ¿Tiene sentido de negocio?"),
+    ]
+    for idx, (title, text) in enumerate(challenges):
+        with challenge_cols[idx % 2]:
+            done = st.checkbox(title, key=f"challenge_{idx}")
+            st.caption(text if not done else f"Completado. {text}")

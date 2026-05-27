@@ -4,3 +4,4 @@ numpy
 scikit-learn
 plotly
 matplotlib
+streamlit-sortables
