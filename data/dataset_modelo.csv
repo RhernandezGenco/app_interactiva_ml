@@ -1,0 +1,13 @@
+id_linea,id_orden,fecha_orden,pais,canal,segmento_cliente,rating_cliente,categoria,subcategoria,marca,proveedor,vendedor,metodo_pago,promocion,prioridad_envio,cantidad,precio_unitario,descuento,costo_unitario,tipo_cambio,venta_neta,margen_gtq,dias_entrega,entrega_tardia,stock_disponible,dias_reposicion,devuelto
+LIN-000001,ORD-000001,2025-01-03,Guatemala,Online,Minorista,2,Tecnologia,Accesorios,Nova,Proveedor A,Ana Lopez,Tarjeta,Cupon,Express,2,650,0.15,410,7.8,1989,734,9,1,12,18,1
+LIN-000002,ORD-000002,2025-01-05,Honduras,Retail,Mayorista,5,Hogar,Electrodomesticos,CasaPlus,Proveedor B,Maria Garcia,Efectivo,Sin promo,Normal,4,320,0,210,7.7,9856,3388,3,0,180,8,0
+LIN-000003,ORD-000003,2025-01-07,El Salvador,B2B,Corporativo,4,Oficina,Herramientas,OfficeLab,Proveedor C,Carlos Ruiz,Credito 30 dias,Sin promo,Normal,10,140,0.05,85,7.9,10507,4127,4,0,90,6,0
+LIN-000004,ORD-000004,2025-01-10,Costa Rica,Online,Nuevo,1,Moda,Ropa,Andes,Proveedor A,Sofia Mendez,PayPal,Liquidacion,Urgente,1,220,0.35,120,7.8,1115,507,12,1,5,25,1
+LIN-000005,ORD-000005,2025-01-12,Panama,Marketplace,Minorista,3,Deportes,Accesorios,Ninja,Proveedor D,Luis Perez,Tarjeta,Black Friday,Express,3,180,0.25,100,7.6,3078,1368,8,1,30,14,1
+LIN-000006,ORD-000006,2025-01-14,Guatemala,Retail,Mayorista,5,Hogar,Muebles,CasaPlus,Proveedor B,Ana Lopez,Transferencia,Sin promo,Normal,7,410,0.05,260,7.9,21549,7875,4,0,220,5,0
+LIN-000007,ORD-000007,2025-01-16,Honduras,B2B,Corporativo,4,Tecnologia,Accesorios,Nova,Proveedor C,Maria Garcia,Credito 30 dias,Cupon,Normal,6,780,0.1,530,7.7,32432,10395,5,0,70,10,0
+LIN-000008,ORD-000008,2025-01-18,El Salvador,Online,Nuevo,2,Oficina,Herramientas,OfficeLab,Proveedor A,Carlos Ruiz,PayPal,Liquidacion,Urgente,2,260,0.35,150,7.8,2636,1115,11,1,8,22,1
+LIN-000009,ORD-000009,2025-01-20,Costa Rica,Retail,Minorista,3,Moda,Ropa,Andes,Proveedor D,Sofia Mendez,Efectivo,Sin promo,Normal,5,95,0,55,7.6,3610,1520,2,0,140,7,0
+LIN-000010,ORD-000010,2025-01-22,Panama,Marketplace,Mayorista,4,Deportes,Accesorios,Ninja,Proveedor B,Luis Perez,Tarjeta,Cupon,Express,8,120,0.1,70,7.7,6653,2772,6,0,60,12,0
+LIN-000011,ORD-000011,2025-01-24,Guatemala,Online,Nuevo,1,Tecnologia,Accesorios,Nova,Proveedor A,Ana Lopez,PayPal,Black Friday,Urgente,1,900,0.25,620,7.8,5265,1638,10,1,3,28,1
+LIN-000012,ORD-000012,2025-01-26,Honduras,Retail,Corporativo,5,Hogar,Electrodomesticos,CasaPlus,Proveedor C,Maria Garcia,Transferencia,Sin promo,Normal,9,300,0.05,190,7.7,19750,7230,3,0,210,6,0
