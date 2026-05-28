@@ -1103,6 +1103,28 @@ def history_line(history: list[dict], y_col: str, title: str) -> go.Figure:
     return fig
 
 
+def cost_function_plot(x, y, best_m: float, b: float) -> go.Figure:
+    m_values = np.linspace(best_m - 0.08, best_m + 0.08, 120)
+    cost_rows = []
+    for m_value in m_values:
+        y_pred = predict_simple(x, m_value, b)
+        cost_rows.append({"m": m_value, "MSE": compute_mse(y, y_pred)})
+    cost_df = pd.DataFrame(cost_rows)
+    best_cost = compute_mse(y, predict_simple(x, best_m, b))
+    fig = px.line(cost_df, x="m", y="MSE", title="Función de coste: MSE al cambiar la pendiente m", color_discrete_sequence=["#457b9d"])
+    fig.add_trace(
+        go.Scatter(
+            x=[best_m],
+            y=[best_cost],
+            mode="markers",
+            name="m calculada",
+            marker=dict(color="#e76f51", size=11),
+        )
+    )
+    fig.update_layout(height=360, margin=dict(l=20, r=20, t=55, b=20))
+    return fig
+
+
 def manual_quiz() -> None:
     quiz = [
         ("¿Qué intenta predecir la regresión lineal?", ["Un número", "Una categoría", "Un archivo SQL"], "Un número"),
@@ -1647,6 +1669,10 @@ def render_movie_regression_section() -> None:
 
     if st.session_state.guided_lr_step >= 6:
         section("Paso 6. Calcular predicciones")
+        st.write("Después de calcular `y predicho`, medimos qué tan lejos quedó cada predicción del valor real.")
+        st.latex(r"error = y_{real} - y_{predicho}")
+        st.latex(r"|error| = valor\ absoluto\ del\ error")
+        st.latex(r"error^2 = error \times error")
         col_a, col_b, col_c, col_d = st.columns(4)
         if col_a.button("Revelar predicción", key="guided_lr_btn_pred"):
             st.session_state.guided_lr_show_pred = True
@@ -1669,6 +1695,13 @@ def render_movie_regression_section() -> None:
 
     if st.session_state.guided_lr_step >= 7:
         section("Paso 7. Calcular errores")
+        st.write("Estas métricas resumen todos los errores individuales en pocos números para entender el error general del modelo.")
+        st.latex(r"MAE = promedio(|error|)")
+        st.write("MAE mide cuánto se equivoca el modelo en promedio, sin importar si el error fue positivo o negativo.")
+        st.latex(r"MSE = promedio(error^2)")
+        st.write("MSE eleva los errores al cuadrado, por eso castiga más los errores grandes.")
+        st.latex(r"RMSE = \sqrt{MSE}")
+        st.write("RMSE vuelve el error a una escala parecida al rating, por eso suele ser más fácil de interpretar que MSE.")
         if st.button("Calcular métricas de error", key="guided_lr_btn_metrics"):
             st.session_state.guided_lr_show_metrics = True
         pred = predict_simple(x, vals["m"], vals["b"])
@@ -1682,6 +1715,8 @@ def render_movie_regression_section() -> None:
                 ]
             )
         st.plotly_chart(plot_closed_line(df_small, vals["m"], vals["b"], True, "Errores como distancias verticales"), width="stretch", key="guided_error_lines")
+        st.write("La función de coste muestra qué tan grande es el error total del modelo. Aquí usamos MSE como coste.")
+        st.plotly_chart(cost_function_plot(x, y, vals["m"], vals["b"]), width="stretch", key="guided_cost_function")
         st.write("Cada línea vertical muestra cuánto se equivocó el modelo para esa película.")
         questions(["¿Cuál métrica es más fácil de interpretar?", "Si RMSE = 0.4, ¿qué significa?", "¿Un error de 0 sería realista?", "¿Qué película tiene mayor error?"])
 
@@ -1711,8 +1746,18 @@ def render_movie_regression_section() -> None:
     if st.session_state.guided_lr_step >= 9:
         section("Paso 9. Entrenar automáticamente")
         st.write("La computadora también puede aprender ajustando m y b poco a poco. A esto se le llama gradient descent.")
+        st.info(
+            "Idea clave: en entrenamiento automático, la computadora calcula dos direcciones de ajuste: `dm` para la pendiente "
+            "y `db` para el intercepto. Si `dm` o `db` son grandes, significa que el error empuja fuerte al modelo para cambiar ese parámetro."
+        )
+        st.write(
+            "`learning_rate` es el tamaño del paso. Un valor pequeño cambia `m` y `b` lentamente; un valor grande cambia más rápido, "
+            "pero puede pasarse de la mejor línea y volver inestable el error."
+        )
         st.latex(r"y_{pred}=m x+b")
         st.latex(r"dm=promedio(2 \cdot error \cdot x), \quad db=promedio(2 \cdot error)")
+        st.latex(r"m_{nuevo}=m-learning\_rate \cdot dm")
+        st.latex(r"b_{nuevo}=b-learning\_rate \cdot db")
         if "guided_lr_gd_m" not in st.session_state:
             st.session_state.guided_lr_gd_m = 0.03
             st.session_state.guided_lr_gd_b = 3.0
@@ -1780,6 +1825,30 @@ def render_movie_regression_section() -> None:
                 ("MSE actual", f"{gd_metrics['mse']:.4f}", None),
                 ("RMSE actual", f"{gd_metrics['rmse']:.4f}", None),
             ]
+        )
+        st.write("Así queda la regresión después del entrenamiento acumulado hasta este momento.")
+        st.plotly_chart(
+            plot_closed_line(
+                df_small,
+                st.session_state.guided_lr_gd_m,
+                st.session_state.guided_lr_gd_b,
+                True,
+                "Línea aprendida con gradient descent y nuevos errores",
+            ),
+            width="stretch",
+            key="guided_gd_trained_line",
+        )
+        st.write("Nuevas predicciones y errores usando los parámetros aprendidos por gradient descent.")
+        st.dataframe(
+            simple_manual_table(
+                df_small,
+                include_pred=True,
+                include_error=True,
+                m=st.session_state.guided_lr_gd_m,
+                b=st.session_state.guided_lr_gd_b,
+            ),
+            width="stretch",
+            hide_index=True,
         )
         h1, h2 = st.columns(2)
         h1.plotly_chart(history_line(st.session_state.guided_lr_gd_history, "mse", "MSE por iteración"), width="stretch", key="guided_mse_hist")

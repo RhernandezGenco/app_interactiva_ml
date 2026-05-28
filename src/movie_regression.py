@@ -32,9 +32,9 @@ def small_manual_movie_dataset() -> pd.DataFrame:
                 "Pelicula J",
             ],
             "reseñas_positivas_pct": [42, 50, 58, 63, 67, 72, 78, 84, 90, 96],
-            "rating_real": [5.1, 5.7, 6.1, 6.4, 6.8, 7.1, 7.5, 8.0, 8.4, 9.0],
-            "popularidad": [45, 52, 60, 62, 70, 75, 81, 85, 91, 96],
-            "presupuesto_millones": [20, 35, 40, 55, 65, 80, 95, 110, 140, 180],
+            "rating_real": [5.4, 5.3, 6.4, 6.0, 7.2, 6.9, 7.9, 7.6, 8.8, 8.5],
+            "popularidad": [43, 55, 58, 66, 68, 79, 77, 88, 90, 94],
+            "presupuesto_millones": [18, 42, 33, 70, 58, 95, 87, 130, 118, 210],
         }
     )
 
