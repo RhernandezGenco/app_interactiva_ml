@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from io import StringIO
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -15,6 +17,26 @@ from src.modeling import (
     compute_feature_importance,
     overfitting_curve,
     train_model,
+)
+from src.movie_regression import (
+    MANUAL_MOVIE_TARGET,
+    MULTIPLE_FEATURES,
+    SIMPLE_FEATURE,
+    compute_errors,
+    compute_gradients_multiple,
+    compute_gradients_simple,
+    compute_mse,
+    generate_large_movie_dataset,
+    normalize_features,
+    predict_multiple,
+    predict_simple,
+    simple_metrics,
+    sklearn_comparison,
+    small_manual_movie_dataset,
+    train_multiple_steps,
+    train_simple_steps,
+    update_multiple_params,
+    update_simple_params,
 )
 from src.plots import (
     before_after_scaling,
@@ -612,6 +634,1327 @@ def prediction_column_config(df_model: pd.DataFrame, features: list[str], numeri
     return config
 
 
+@st.cache_data(show_spinner=False)
+def cached_movie_data(n_rows: int, random_state: int) -> tuple[pd.DataFrame, str]:
+    return load_or_generate_movie_dataset(n_rows=n_rows, random_state=random_state)
+
+
+@st.cache_resource(show_spinner=False)
+def cached_movie_train(
+    df: pd.DataFrame,
+    selected_features: tuple[str, ...],
+    use_scaling: bool,
+    test_size: float,
+    random_state: int,
+):
+    return train_movie_regression(df, list(selected_features), use_scaling, test_size, random_state)
+
+
+def rmse(y_true, y_pred) -> float:
+    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
+
+
+def simple_regression_fit(df: pd.DataFrame, feature: str) -> tuple[LinearRegression, pd.DataFrame, dict]:
+    data = df[[feature, MOVIE_TARGET]].dropna().copy()
+    X = data[[feature]]
+    y = data[MOVIE_TARGET]
+    model = LinearRegression()
+    model.fit(X, y)
+    data["prediccion"] = np.clip(model.predict(X), 1.0, 10.0)
+    metrics = {
+        "MAE": mean_absolute_error(y, data["prediccion"]),
+        "RMSE": rmse(y, data["prediccion"]),
+        "R2": r2_score(y, data["prediccion"]),
+    }
+    return model, data, metrics
+
+
+def simple_regression_plot(data: pd.DataFrame, feature: str, model: LinearRegression, show_errors: bool = False) -> go.Figure:
+    fig = px.scatter(
+        data,
+        x=feature,
+        y=MOVIE_TARGET,
+        opacity=0.65,
+        labels={MOVIE_TARGET: "rating_numerico", feature: feature},
+        color_discrete_sequence=["#457b9d"],
+    )
+    x_line = np.linspace(data[feature].min(), data[feature].max(), 100)
+    y_line = np.clip(model.predict(pd.DataFrame({feature: x_line})), 1.0, 10.0)
+    fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines", name="Linea de regresion", line=dict(color="#e76f51", width=3)))
+    if show_errors:
+        sample = data.sample(min(18, len(data)), random_state=7).sort_values(feature)
+        for _, row in sample.iterrows():
+            fig.add_trace(
+                go.Scatter(
+                    x=[row[feature], row[feature]],
+                    y=[row[MOVIE_TARGET], row["prediccion"]],
+                    mode="lines",
+                    showlegend=False,
+                    line=dict(color="#111827", width=1, dash="dot"),
+                    hoverinfo="skip",
+                )
+            )
+    fig.update_layout(height=430, margin=dict(l=20, r=20, t=30, b=20))
+    return fig
+
+
+def rating_real_vs_pred_plot(y_true, y_pred) -> go.Figure:
+    plot_df = pd.DataFrame({"rating real": y_true, "rating predicho": y_pred})
+    fig = px.scatter(plot_df, x="rating real", y="rating predicho", opacity=0.7, color_discrete_sequence=["#2a9d8f"])
+    fig.add_trace(go.Scatter(x=[1, 10], y=[1, 10], mode="lines", name="Ideal y=x", line=dict(color="#e76f51", dash="dash")))
+    fig.update_layout(height=420, xaxis=dict(range=[1, 10]), yaxis=dict(range=[1, 10]))
+    return fig
+
+
+def residual_plots(y_true, y_pred) -> tuple[go.Figure, go.Figure]:
+    errors = pd.Series(y_true.to_numpy() - np.asarray(y_pred), name="error")
+    hist = px.histogram(errors.to_frame(), x="error", nbins=30, color_discrete_sequence=["#457b9d"])
+    hist.update_layout(height=360)
+    resid = px.scatter(
+        pd.DataFrame({"rating predicho": y_pred, "error": errors}),
+        x="rating predicho",
+        y="error",
+        opacity=0.7,
+        color_discrete_sequence=["#e76f51"],
+    )
+    resid.add_hline(y=0, line_dash="dash", line_color="#111827")
+    resid.update_layout(height=360)
+    return hist, resid
+
+
+def train_test_metrics_row(metrics: dict) -> None:
+    cols = st.columns(6)
+    cols[0].metric("MAE train", f"{metrics['mae_train']:.3f}")
+    cols[1].metric("MAE test", f"{metrics['mae_test']:.3f}")
+    cols[2].metric("RMSE train", f"{metrics['rmse_train']:.3f}")
+    cols[3].metric("RMSE test", f"{metrics['rmse_test']:.3f}")
+    cols[4].metric("R2 train", f"{metrics['r2_train']:.3f}")
+    cols[5].metric("R2 test", f"{metrics['r2_test']:.3f}")
+
+
+def normalization_comparison_table(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    values = df[cols].apply(pd.to_numeric, errors="coerce")
+    imputed = SimpleImputer(strategy="median").fit_transform(values)
+    scaled = StandardScaler().fit_transform(imputed)
+    return pd.DataFrame(
+        {
+            "Variable": cols,
+            "media antes": imputed.mean(axis=0),
+            "std antes": imputed.std(axis=0),
+            "media despues": scaled.mean(axis=0),
+            "std despues": scaled.std(axis=0),
+        }
+    )
+
+
+def movie_model_comparison(df: pd.DataFrame, test_size: float, random_state: int, use_scaling: bool) -> pd.DataFrame:
+    configs = [
+        ("Modelo A", ["reseñas_positivas_pct"]),
+        ("Modelo B", ["reseñas_positivas_pct", "popularidad"]),
+        (
+            "Modelo C",
+            [
+                "reseñas_positivas_pct",
+                "popularidad",
+                "votos_usuarios",
+                "director_experiencia_anios",
+                "presupuesto_millones",
+                "marketing_millones",
+            ],
+        ),
+        ("Modelo D", MOVIE_FEATURES),
+    ]
+    rows = []
+    for name, features in configs:
+        result = train_movie_regression(df, features, use_scaling, test_size, random_state)
+        rows.append(
+            {
+                "Modelo": name,
+                "Features usadas": ", ".join(features),
+                "MAE test": result.metrics["mae_test"],
+                "RMSE test": result.metrics["rmse_test"],
+                "R2 test": result.metrics["r2_test"],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def overfitting_regression_comparison(df: pd.DataFrame, test_size: float, random_state: int, use_scaling: bool, add_noise: bool) -> pd.DataFrame:
+    data_dup = add_correlated_movie_features(df, random_state)
+    data_noise = add_noise_movie_features(data_dup if add_noise else df, random_state)
+    configs = [
+        ("Simple", df, ["reseñas_positivas_pct", "popularidad"]),
+        ("Muchas variables", df, MOVIE_FEATURES),
+        ("Duplicadas", data_dup, MOVIE_FEATURES + ["popularidad_dup", "reseñas_positivas_dup", "marketing_dup"]),
+    ]
+    if add_noise:
+        configs.append(("Con ruido", data_noise, MOVIE_FEATURES + [f"ruido_{idx}" for idx in range(1, 6)]))
+    rows = []
+    for name, data, features in configs:
+        result = train_movie_regression(data, features, use_scaling, test_size, random_state)
+        rows.append(
+            {
+                "Modelo": name,
+                "MAE train": result.metrics["mae_train"],
+                "MAE test": result.metrics["mae_test"],
+                "R2 train": result.metrics["r2_train"],
+                "R2 test": result.metrics["r2_test"],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_movie_quiz() -> None:
+    quiz = [
+        ("¿Qué predice una regresión lineal?", ["Un número", "Una tabla SQL", "Una imagen"], "Un número"),
+        ("En este ejemplo, ¿cuál es el target?", ["rating_numerico", "titulo", "genero_principal"], "rating_numerico"),
+        ("¿Qué significa un coeficiente positivo?", ["Que la variable tiende a subir la predicción", "Que la variable se elimina", "Que el modelo falló"], "Que la variable tiende a subir la predicción"),
+        ("¿Qué mide MAE?", ["El error promedio absoluto", "La cantidad de filas duplicadas", "La cantidad de géneros"], "El error promedio absoluto"),
+        ("¿Por qué usamos test?", ["Para evaluar con datos que el modelo no vio", "Para entrenar dos veces lo mismo", "Para borrar variables categóricas"], "Para evaluar con datos que el modelo no vio"),
+        ("¿Qué pasa si agregamos variables de ruido?", ["Puede empeorar la generalización", "Siempre mejora", "Convierte la regresión en SQL"], "Puede empeorar la generalización"),
+    ]
+    score = 0
+    for idx, (question, options, correct) in enumerate(quiz, start=1):
+        answer = st.radio(f"Pregunta {idx}: {question}", options, key=f"movie_quiz_{idx}")
+        if answer == correct:
+            score += 1
+    st.metric("Puntaje final", f"{score}/{len(quiz)}")
+
+
+def render_movie_regression_section_previous_sklearn_demo() -> None:
+    st.header("Regresión lineal para predecir rating de películas")
+    df_movies, movie_source = cached_movie_data(900, 42)
+    st.caption(movie_source)
+
+    st.markdown(
+        """
+        <div class="concept-box">
+        Una regresión lineal intenta predecir un número. En este caso, queremos predecir el rating numérico de una película
+        usando características como duración, presupuesto, popularidad, reseñas positivas y experiencia del director.
+        <br><br>
+        El modelo no entiende la película como una persona. Solo ve números. Aprende qué variables tienden a subir o bajar el rating.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    f1, f2, f3 = st.columns([1, 1, 1])
+    f1.markdown('<div class="concept-box"><b>Características de la película</b><br>género, duración, popularidad, reseñas</div>', unsafe_allow_html=True)
+    f2.markdown('<div class="concept-box"><b>Regresión Lineal</b><br>rating = bias + pesos * variables</div>', unsafe_allow_html=True)
+    f3.markdown('<div class="concept-box"><b>Rating estimado</b><br>Ejemplo: rating_numerico = 8.2</div>', unsafe_allow_html=True)
+    st.code("Simple: y = m*x + b\nMultiple: rating = b + w1*x1 + w2*x2 + w3*x3 + ...")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Películas", f"{len(df_movies):,}")
+    c2.metric("Rating promedio", f"{df_movies[MOVIE_TARGET].mean():.2f}")
+    c3.metric("Features numéricas", len(MOVIE_NUMERIC_FEATURES))
+    c4.metric("Feature categórica", ", ".join(MOVIE_CATEGORICAL_FEATURES))
+
+    section("1. Primero: una sola variable")
+    simple_feature = st.selectbox("Variable para explicar una regresión simple", SIMPLE_REGRESSION_OPTIONS)
+    simple_model, simple_data, simple_metrics = simple_regression_fit(df_movies, simple_feature)
+    slope = float(simple_model.coef_[0])
+    intercept = float(simple_model.intercept_)
+    left, right = st.columns([1.45, 1])
+    with left:
+        st.plotly_chart(simple_regression_plot(simple_data, simple_feature, simple_model), width="stretch", key=f"simple_reg_{simple_feature}")
+    with right:
+        st.metric("Pendiente m", f"{slope:.4f}")
+        st.metric("Intercepto b", f"{intercept:.3f}")
+        st.code(f"rating = {slope:.4f} * {simple_feature} + {intercept:.3f}")
+        st.write(
+            "La línea intenta pasar lo más cerca posible de los puntos. Cada punto es una película. "
+            "Si la pendiente es positiva, cuando la variable sube, el rating tiende a subir."
+        )
+        for name, value in simple_metrics.items():
+            st.metric(name, f"{value:.3f}")
+    questions(["¿La línea parece representar bien los puntos?", "¿La pendiente es positiva o negativa?", "¿La variable elegida parece tener relación con el rating?", "¿Hay puntos alejados de la línea?"])
+
+    section("2. Error: qué intenta minimizar el modelo")
+    st.plotly_chart(simple_regression_plot(simple_data, simple_feature, simple_model, show_errors=True), width="stretch", key=f"errors_{simple_feature}")
+    example = simple_data.sample(1, random_state=9).iloc[0]
+    real = float(example[MOVIE_TARGET])
+    pred = float(example["prediccion"])
+    st.write(
+        f"El error es la diferencia entre el rating real y el rating predicho. "
+        f"Ejemplo: rating real = {real:.1f}, rating predicho = {pred:.1f}, error = {abs(real - pred):.1f}."
+    )
+    st.write("La regresión lineal busca una línea que reduzca esos errores en conjunto.")
+    e1, e2, e3 = st.columns(3)
+    e1.info("MAE: error promedio absoluto. En promedio, cuántos puntos de rating se equivoca el modelo.")
+    e2.info("RMSE: similar al MAE, pero castiga más los errores grandes.")
+    e3.info("R2: qué tanto de la variación del rating logra explicar el modelo. Mientras más cerca de 1, mejor.")
+
+    section("3. Ahora: varias variables")
+    st.write("Cuando usamos varias variables, el modelo ya no aprende una sola pendiente. Aprende un peso para cada variable.")
+    st.code("rating = bias\n       + peso_1 * reseñas_positivas_pct\n       + peso_2 * popularidad\n       + peso_3 * presupuesto_millones\n       + ...")
+    config_left, config_right = st.columns([1.2, 1])
+    with config_left:
+        st.write("**Features numéricas**")
+        selected_numeric = [feature for feature in MOVIE_NUMERIC_FEATURES if st.checkbox(feature, value=True, key=f"movie_feature_{feature}")]
+        use_genre = st.checkbox("genero_principal", value=True, key="movie_feature_genero")
+    with config_right:
+        test_size = st.slider("test_size", 0.1, 0.5, 0.2, 0.05, key="movie_test_size")
+        random_state = st.number_input("random_state", value=42, step=1, key="movie_random_state")
+        use_scaling = st.checkbox("Usar normalización", value=True, key="movie_scaling")
+        st.plotly_chart(split_bar((1 - test_size) * 100, test_size * 100), width="stretch", key="movie_split_bar")
+        st.write("El modelo aprende con train y se evalúa con test. Test simula películas nuevas que el modelo no vio.")
+    questions(["¿Por qué no evaluamos solo con los datos de entrenamiento?", "¿Qué pasaría si el modelo memoriza?", "¿Qué representa test en la vida real?"])
+
+    selected_features = selected_numeric + (["genero_principal"] if use_genre else [])
+    if not selected_features:
+        st.warning("Selecciona al menos una variable para entrenar.")
+        return
+
+    section("4. Normalización")
+    norm_cols = ["presupuesto_millones", "votos_usuarios", "reseñas_positivas_pct", "duracion_min"]
+    st.dataframe(normalization_comparison_table(df_movies, norm_cols), width="stretch")
+    st.write(
+        "Normalizar pone las variables en escalas comparables. Después de normalizar, quedan con media cercana a 0 "
+        "y desviación estándar cercana a 1."
+    )
+    questions(["¿Qué variable tenía la escala más grande antes?", "¿Por qué puede ser difícil comparar coeficientes sin normalizar?", "¿Cambió mucho el desempeño?"])
+
+    section("5. Entrenar modelo")
+    train_clicked = st.button("Entrenar regresión lineal", type="primary")
+    state_key = "movie_regression_result"
+    if train_clicked:
+        st.session_state[state_key] = cached_movie_train(
+            df_movies,
+            tuple(selected_features),
+            bool(use_scaling),
+            float(test_size),
+            int(random_state),
+        )
+        st.session_state["movie_regression_config"] = {
+            "features": selected_features,
+            "use_scaling": bool(use_scaling),
+            "test_size": float(test_size),
+            "random_state": int(random_state),
+        }
+    result = st.session_state.get(state_key)
+
+    if result is None:
+        st.info("Presiona el botón para entrenar el modelo múltiple.")
+    else:
+        trained_config = st.session_state.get(
+            "movie_regression_config",
+            {"features": selected_features, "use_scaling": bool(use_scaling)},
+        )
+        trained_features = trained_config["features"]
+        if trained_features != selected_features:
+            st.info("Cambiaste la selección de variables. Presiona de nuevo el botón de entrenamiento para actualizar el modelo.")
+        train_test_metrics_row(result.metrics)
+        g1, g2 = st.columns([1.1, 1])
+        with g1:
+            st.write("**Rating real vs rating predicho**")
+            st.plotly_chart(rating_real_vs_pred_plot(result.y_test, result.y_pred_test), width="stretch", key="movie_real_vs_pred")
+        hist, resid = residual_plots(result.y_test, result.y_pred_test)
+        with g2:
+            st.write("**Histograma de errores**")
+            st.plotly_chart(hist, width="stretch", key="movie_error_hist")
+        st.write("**Residuos vs predicción**")
+        st.plotly_chart(resid, width="stretch", key="movie_residuals")
+        st.write("Si las predicciones fueran perfectas, los puntos caerían cerca de la línea diagonal.")
+        questions(["¿El modelo predice mejor ratings altos o bajos?", "¿Hay muchos errores grandes?", "¿Los errores parecen aleatorios o tienen patrón?", "¿Train es mucho mejor que test?"])
+
+        section("6. Coeficientes del modelo")
+        coef_table = result.coefficients.drop(columns=["impacto_abs"]).copy()
+        st.dataframe(coef_table, width="stretch", height=360)
+        st.write(
+            "Un coeficiente positivo significa que, manteniendo lo demás constante, esa variable tiende a subir el rating. "
+            "Un coeficiente negativo significa que tiende a bajarlo."
+        )
+        if trained_config.get("use_scaling"):
+            st.info("Con normalización, los coeficientes son más comparables entre variables.")
+        else:
+            st.warning("Sin normalización, los coeficientes pueden ser difíciles de comparar porque las variables tienen escalas distintas.")
+        questions(["¿Qué variables suben más el rating?", "¿Qué variables parecen bajar el rating?", "¿Tiene sentido que reseñas_positivas_pct tenga coeficiente positivo?", "¿Presupuesto alto siempre significa mejor rating?"])
+
+        section("7. Predice el rating de tu propia película")
+        genres = sorted(df_movies["genero_principal"].dropna().unique().tolist())
+        with st.form("movie_manual_prediction"):
+            p1, p2, p3 = st.columns(3)
+            manual = {
+                "genero_principal": p1.selectbox("genero_principal", genres, index=genres.index("Drama") if "Drama" in genres else 0),
+                "duracion_min": p1.slider("duracion_min", 70, 190, 125),
+                "presupuesto_millones": p1.slider("presupuesto_millones", 1.0, 260.0, 45.0),
+                "marketing_millones": p1.slider("marketing_millones", 0.5, 160.0, 20.0),
+                "votos_usuarios": p2.number_input("votos_usuarios", min_value=500, max_value=850000, value=80000, step=1000),
+                "popularidad": p2.slider("popularidad", 0.0, 100.0, 76.0),
+                "reseñas_positivas_pct": p2.slider("reseñas_positivas_pct", 0.0, 100.0, 88.0),
+                "director_experiencia_anios": p2.slider("director_experiencia_anios", 0, 40, 14),
+                "actores_populares": p3.slider("actores_populares", 0, 5, 2),
+                "premios_previos": p3.slider("premios_previos", 0, 12, 2),
+                "es_franquicia": p3.selectbox("es_franquicia", [0, 1]),
+                "edad_recomendada": p3.selectbox("edad_recomendada", [0, 7, 12, 13, 16, 18], index=3),
+                "nivel_accion": p1.slider("nivel_accion", 0.0, 10.0, 3.0),
+                "nivel_comedia": p1.slider("nivel_comedia", 0.0, 10.0, 2.0),
+                "nivel_drama": p2.slider("nivel_drama", 0.0, 10.0, 8.0),
+                "nivel_romance": p3.slider("nivel_romance", 0.0, 10.0, 3.0),
+                "nivel_suspenso": p3.slider("nivel_suspenso", 0.0, 10.0, 4.0),
+            }
+            submitted = st.form_submit_button("Predecir rating")
+        if submitted:
+            row = pd.DataFrame([{feature: manual[feature] for feature in trained_features}])
+            prediction = float(np.clip(result.pipeline.predict(row)[0], 1.0, 10.0))
+            category = "Bajo" if prediction < 6.0 else "Medio" if prediction < 7.2 else "Alto" if prediction < 8.3 else "Excelente"
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Rating predicho", f"{prediction:.2f}")
+            m2.metric("Rating redondeado", f"{round(prediction, 1):.1f}")
+            m3.metric("Categoría interpretativa", category)
+            st.write(
+                "Esta categoría es solo una interpretación posterior. El modelo principal sigue siendo regresión lineal porque predice un número. "
+                f"El modelo estima que esta película tendría rating {prediction:.2f} porque sus características se parecen a películas históricas con ratings similares."
+            )
+
+    section("8. Experimento: agregar o quitar variables")
+    comparison = movie_model_comparison(df_movies, float(test_size), int(random_state), bool(use_scaling))
+    st.dataframe(comparison, width="stretch")
+    questions(["¿Agregar más variables mejoró el modelo?", "¿La mejora fue grande o pequeña?", "¿Hay variables que agregan ruido?", "¿Cuál modelo escogerías y por qué?"])
+
+    section("9. Experimento: variables correlacionadas")
+    add_dups = st.checkbox("Agregar variables duplicadas/correlacionadas", key="movie_add_dups")
+    df_corr = add_correlated_movie_features(df_movies, int(random_state)) if add_dups else df_movies.copy()
+    if add_dups:
+        st.plotly_chart(px.imshow(df_corr.select_dtypes(include=[np.number]).corr(), text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto"), width="stretch", key="movie_corr_heatmap")
+        pairs = high_movie_correlations(df_corr, 0.85)
+        st.dataframe(pairs if not pairs.empty else pd.DataFrame({"mensaje": ["No hay pares sobre 0.85."]}), width="stretch")
+    base = train_movie_regression(df_movies, MOVIE_FEATURES, bool(use_scaling), float(test_size), int(random_state))
+    dup = train_movie_regression(add_correlated_movie_features(df_movies, int(random_state)), MOVIE_FEATURES + ["popularidad_dup", "reseñas_positivas_dup", "marketing_dup"], bool(use_scaling), float(test_size), int(random_state))
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Modelo": "Sin variables duplicadas", "MAE test": base.metrics["mae_test"], "RMSE test": base.metrics["rmse_test"], "R2 test": base.metrics["r2_test"]},
+                {"Modelo": "Con variables duplicadas", "MAE test": dup.metrics["mae_test"], "RMSE test": dup.metrics["rmse_test"], "R2 test": dup.metrics["r2_test"]},
+            ]
+        ),
+        width="stretch",
+    )
+    st.write("Variables muy correlacionadas pueden no aportar información nueva y pueden hacer que los coeficientes sean inestables o difíciles de interpretar.")
+    questions(["¿Mejoró el MAE?", "¿Mejoró el R2?", "¿Los coeficientes cambiaron mucho?", "¿Agregar columnas repetidas hizo el modelo más claro o más confuso?"])
+
+    section("10. Overfitting en regresión lineal")
+    st.write(
+        "La regresión lineal simple no suele memorizar tanto como modelos muy flexibles, pero puede sobreajustarse si agregamos demasiadas variables, "
+        "transformaciones innecesarias o ruido."
+    )
+    add_noise = st.button("Agregar variables de ruido")
+    overfit_df = overfitting_regression_comparison(df_movies, float(test_size), int(random_state), bool(use_scaling), add_noise)
+    st.dataframe(overfit_df, width="stretch")
+    st.write("Si train mejora pero test no mejora o empeora, el modelo está aprendiendo cosas que no generalizan.")
+    questions(["¿Train mejoró al agregar ruido?", "¿Test mejoró realmente?", "¿Qué modelo generaliza mejor?"])
+
+    section("11. Mini quiz")
+    render_movie_quiz()
+
+    section("12. Retos finales")
+    retos = [
+        ("Reto 1", "Usa solo reseñas_positivas_pct. ¿Qué MAE obtuviste?"),
+        ("Reto 2", "Agrega popularidad y votos_usuarios. ¿Mejoró el modelo?"),
+        ("Reto 3", "Activa normalización. ¿Cambió el desempeño o principalmente la interpretación?"),
+        ("Reto 4", "Agrega variables correlacionadas. ¿Mejoró o solo complicó los coeficientes?"),
+        ("Reto 5", "Agrega variables de ruido. ¿Train mejora más que test?"),
+        ("Reto 6", "Crea una película manualmente. ¿Qué variables tuviste que subir para obtener rating alto?"),
+    ]
+    cols = st.columns(2)
+    for idx, (title, text) in enumerate(retos):
+        with cols[idx % 2]:
+            done = st.checkbox(title, key=f"movie_challenge_{idx}")
+            st.caption(text if not done else f"Completado. {text}")
+
+
+def manual_line_plot(df_manual: pd.DataFrame, m: float, b: float, title: str) -> go.Figure:
+    plot_df = df_manual.copy()
+    plot_df["rating_predicho"] = predict_simple(plot_df[SIMPLE_FEATURE], m, b)
+    x_line = np.linspace(plot_df[SIMPLE_FEATURE].min(), plot_df[SIMPLE_FEATURE].max(), 120)
+    y_line = predict_simple(x_line, m, b)
+    fig = px.scatter(
+        plot_df,
+        x=SIMPLE_FEATURE,
+        y=MANUAL_MOVIE_TARGET,
+        text="titulo" if "titulo" in plot_df.columns else None,
+        color_discrete_sequence=["#457b9d"],
+        title=title,
+    )
+    fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines", name="Modelo actual", line=dict(color="#e76f51", width=3)))
+    error_rows = plot_df if len(plot_df) <= 80 else plot_df.sample(80, random_state=7)
+    for _, row in error_rows.iterrows():
+        fig.add_trace(
+            go.Scatter(
+                x=[row[SIMPLE_FEATURE], row[SIMPLE_FEATURE]],
+                y=[row[MANUAL_MOVIE_TARGET], row["rating_predicho"]],
+                mode="lines",
+                showlegend=False,
+                line=dict(color="#111827", width=1, dash="dot"),
+                hoverinfo="skip",
+            )
+        )
+    fig.update_traces(textposition="top center")
+    fig.update_layout(height=430, margin=dict(l=20, r=20, t=45, b=20), yaxis_title="rating_real")
+    return fig
+
+
+def history_line(history: list[dict], y_col: str, title: str) -> go.Figure:
+    hist = pd.DataFrame(history)
+    if hist.empty:
+        hist = pd.DataFrame({"iteracion": [0], y_col: [0]})
+    fig = px.line(hist, x="iteracion", y=y_col, markers=True, title=title, color_discrete_sequence=["#2a9d8f"])
+    fig.update_layout(height=300, margin=dict(l=20, r=20, t=45, b=20))
+    return fig
+
+
+def manual_quiz() -> None:
+    quiz = [
+        ("¿Qué intenta predecir la regresión lineal?", ["Un número", "Una categoría", "Un archivo SQL"], "Un número"),
+        ("¿Qué representa la pendiente m?", ["Cuánto cambia la predicción cuando cambia x", "El nombre de la película", "La cantidad de columnas"], "Cuánto cambia la predicción cuando cambia x"),
+        ("¿Qué representa el error?", ["La diferencia entre lo real y lo predicho", "El número de filas", "El nombre de la variable"], "La diferencia entre lo real y lo predicho"),
+        ("¿Qué hace el entrenamiento?", ["Ajusta parámetros para reducir el error", "Borra el dataset", "Cambia los títulos"], "Ajusta parámetros para reducir el error"),
+        ("¿Por qué la computadora puede entrenar con miles de datos?", ["Porque repite operaciones matemáticas muchas veces", "Porque adivina", "Porque no necesita datos"], "Porque repite operaciones matemáticas muchas veces"),
+        ("¿Por qué normalizamos?", ["Para poner variables en escalas comparables", "Para eliminar el target", "Para convertir todo en texto"], "Para poner variables en escalas comparables"),
+    ]
+    score = 0
+    for idx, (prompt, options, correct) in enumerate(quiz, start=1):
+        answer = st.radio(f"Pregunta {idx}: {prompt}", options, key=f"manual_lr_quiz_{idx}")
+        score += int(answer == correct)
+    st.metric("Puntaje final", f"{score}/{len(quiz)}")
+
+
+def render_movie_regression_section_previous_gradient_demo() -> None:
+    st.header("Regresión lineal hecha a mano")
+    st.markdown(
+        """
+        <div class="concept-box">
+        Este laboratorio muestra que un modelo no es magia: es una fórmula que predice, mide su error y ajusta sus parámetros
+        muchas veces. Usaremos películas para predecir un rating numérico a partir del porcentaje de reseñas positivas.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    df_small = small_manual_movie_dataset()
+    x_small = df_small[SIMPLE_FEATURE].to_numpy(dtype=float)
+    y_small = df_small[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+
+    section("1. Dataset pequeño para trabajar a mano")
+    st.write("Para empezar usaremos una sola variable: porcentaje de reseñas positivas. Queremos predecir el rating de la película.")
+    st.dataframe(df_small, width="stretch", hide_index=True)
+
+    section("2. Fórmula de la regresión lineal simple")
+    c1, c2 = st.columns([1, 1])
+    c1.markdown(
+        """
+        <div class="concept-box">
+        <b>rating_predicho = m * reseñas_positivas_pct + b</b>
+        <br><br>
+        m = pendiente<br>
+        b = intercepto<br>
+        x = reseñas positivas<br>
+        y = rating real<br>
+        y_pred = rating predicho
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    c2.write(
+        "La pendiente indica cuánto cambia el rating cuando suben las reseñas positivas. "
+        "El intercepto es el punto de inicio de la línea."
+    )
+
+    section("3. Modo manual: mover la línea a mano")
+    m_manual = st.slider("pendiente m", -0.2, 0.2, 0.03, 0.001, key="manual_slider_m")
+    b_manual = st.slider("intercepto b", 0.0, 10.0, 3.0, 0.1, key="manual_slider_b")
+    pred_manual = predict_simple(x_small, m_manual, b_manual)
+    errors_manual = compute_errors(y_small, pred_manual)
+    manual_table = pd.concat([df_small, errors_manual], axis=1)
+    metrics_manual = simple_metrics(y_small, pred_manual)
+    st.dataframe(manual_table, width="stretch", hide_index=True)
+    mcols = st.columns(3)
+    mcols[0].metric("MAE", f"{metrics_manual['mae']:.3f}")
+    mcols[1].metric("MSE", f"{metrics_manual['mse']:.3f}")
+    mcols[2].metric("RMSE", f"{metrics_manual['rmse']:.3f}")
+    st.write("MAE es el error promedio absoluto. MSE es el promedio de errores al cuadrado. RMSE es el error típico en unidades de rating.")
+
+    section("4. Gráfica interactiva")
+    st.plotly_chart(manual_line_plot(df_small, m_manual, b_manual, "Puntos reales, línea actual y errores"), width="stretch", key="manual_line_plot")
+    st.write("La regresión lineal busca una línea que pase lo más cerca posible de los puntos.")
+
+    section("5. Reto manual para la estudiante")
+    r1, r2 = st.columns(2)
+    r1.metric("MAE actual", f"{metrics_manual['mae']:.3f}")
+    r2.metric("RMSE actual", f"{metrics_manual['rmse']:.3f}")
+    if metrics_manual["rmse"] > 1.0:
+        st.warning("Todavía hay bastante error.")
+    elif metrics_manual["rmse"] >= 0.5:
+        st.info("La línea ya se acerca bastante.")
+    else:
+        st.success("Muy buen ajuste.")
+    questions(["¿Qué pasa si subís mucho la pendiente?", "¿Qué pasa si bajás mucho el intercepto?", "¿Podés encontrar una línea que reduzca el error?", "¿La línea perfecta existe o siempre queda algo de error?"])
+
+    section("6. Una iteración como la computadora")
+    if "manual_gd_m" not in st.session_state:
+        st.session_state.manual_gd_m = 0.03
+        st.session_state.manual_gd_b = 3.0
+        st.session_state.manual_gd_history = []
+    learning_rate = st.slider("learning_rate", 0.000001, 0.01, 0.0001, format="%.6f", key="manual_learning_rate")
+    before_pred = predict_simple(x_small, st.session_state.manual_gd_m, st.session_state.manual_gd_b)
+    dm, db = compute_gradients_simple(x_small, y_small, before_pred)
+    next_m, next_b = update_simple_params(st.session_state.manual_gd_m, st.session_state.manual_gd_b, dm, db, learning_rate)
+    after_pred = predict_simple(x_small, next_m, next_b)
+    iter_table = pd.concat(
+        [
+            df_small[["titulo", SIMPLE_FEATURE, MANUAL_MOVIE_TARGET]],
+            pd.DataFrame({"prediccion": before_pred, "error": before_pred - y_small}),
+        ],
+        axis=1,
+    )
+    st.dataframe(iter_table, width="stretch", hide_index=True)
+    i1, i2, i3, i4 = st.columns(4)
+    i1.metric("m actual", f"{st.session_state.manual_gd_m:.5f}")
+    i2.metric("b actual", f"{st.session_state.manual_gd_b:.5f}")
+    i3.metric("gradiente dm", f"{dm:.3f}")
+    i4.metric("gradiente db", f"{db:.3f}")
+    st.write(f"Error antes: {compute_mse(y_small, before_pred):.4f} · Error después de esta iteración: {compute_mse(y_small, after_pred):.4f}")
+    if st.button("Siguiente iteración", type="primary"):
+        new_m, new_b, hist, stable = train_simple_steps(
+            x_small,
+            y_small,
+            st.session_state.manual_gd_m,
+            st.session_state.manual_gd_b,
+            learning_rate,
+            1,
+            st.session_state.manual_gd_history,
+        )
+        if stable:
+            st.session_state.manual_gd_m = new_m
+            st.session_state.manual_gd_b = new_b
+            st.session_state.manual_gd_history = hist
+            st.rerun()
+        else:
+            st.warning("El entrenamiento se volvió inestable. Bajá el learning rate o reiniciá el entrenamiento.")
+
+    section("7. Entrenamiento automático")
+    b1, b2, b3, b4 = st.columns(4)
+    steps_to_run = 0
+    if b1.button("Entrenar 10 iteraciones"):
+        steps_to_run = 10
+    if b2.button("Entrenar 100 iteraciones"):
+        steps_to_run = 100
+    if b3.button("Entrenar 1000 iteraciones"):
+        steps_to_run = 1000
+    if b4.button("Reiniciar entrenamiento"):
+        st.session_state.manual_gd_m = 0.03
+        st.session_state.manual_gd_b = 3.0
+        st.session_state.manual_gd_history = []
+        st.rerun()
+    if steps_to_run:
+        new_m, new_b, hist, stable = train_simple_steps(
+            x_small,
+            y_small,
+            st.session_state.manual_gd_m,
+            st.session_state.manual_gd_b,
+            learning_rate,
+            steps_to_run,
+            st.session_state.manual_gd_history,
+        )
+        if stable:
+            st.session_state.manual_gd_m = new_m
+            st.session_state.manual_gd_b = new_b
+            st.session_state.manual_gd_history = hist
+            st.rerun()
+        else:
+            st.warning("El error explotó o se volvió infinito. Probá un learning rate más pequeño.")
+
+    gd_pred = predict_simple(x_small, st.session_state.manual_gd_m, st.session_state.manual_gd_b)
+    gd_metrics = simple_metrics(y_small, gd_pred)
+    gcols = st.columns(5)
+    gcols[0].metric("Iteración actual", len(st.session_state.manual_gd_history))
+    gcols[1].metric("m actual", f"{st.session_state.manual_gd_m:.5f}")
+    gcols[2].metric("b actual", f"{st.session_state.manual_gd_b:.5f}")
+    gcols[3].metric("MSE actual", f"{gd_metrics['mse']:.4f}")
+    gcols[4].metric("RMSE actual", f"{gd_metrics['rmse']:.4f}")
+    st.write("Entrenar significa repetir muchas veces: predecir, medir error y ajustar m y b.")
+    h1, h2 = st.columns(2)
+    h1.plotly_chart(history_line(st.session_state.manual_gd_history, "mse", "MSE por iteración"), width="stretch", key="manual_mse_history")
+    h2.plotly_chart(history_line(st.session_state.manual_gd_history, "rmse", "RMSE por iteración"), width="stretch", key="manual_rmse_history")
+    h3, h4 = st.columns(2)
+    h3.plotly_chart(history_line(st.session_state.manual_gd_history, "m", "Evolución de m"), width="stretch", key="manual_m_history")
+    h4.plotly_chart(history_line(st.session_state.manual_gd_history, "b", "Evolución de b"), width="stretch", key="manual_b_history")
+
+    section("8. Experimento con learning rate")
+    st.write("Learning rate es el tamaño del paso que da el modelo cuando ajusta sus parámetros.")
+    lr_cols = st.columns(3)
+    lr_cols[0].info("Muy bajo: aprende muy lento.")
+    lr_cols[1].success("Adecuado: baja el error de forma estable.")
+    lr_cols[2].warning("Muy alto: puede saltarse la mejor solución y hacer que el error suba.")
+    questions(["¿Qué pasa si el learning rate es muy pequeño?", "¿Qué pasa si es demasiado grande?", "¿Cuál parece funcionar mejor?"])
+
+    section("9. De hacerlo a mano a hacerlo a gran escala")
+    st.write(
+        "Con 5 películas podemos calcular los errores a mano. Con 100,000 sería imposible. "
+        "La computadora hace las mismas operaciones, pero miles o millones de veces."
+    )
+    if st.button("Generar dataset grande"):
+        st.session_state.manual_large_df = generate_large_movie_dataset(1000, 42)
+    df_large = st.session_state.get("manual_large_df")
+    if df_large is not None:
+        st.metric("Cantidad de filas", f"{len(df_large):,}")
+        st.plotly_chart(
+            manual_line_plot(df_large.assign(titulo=""), st.session_state.manual_gd_m, st.session_state.manual_gd_b, "Misma línea sobre 1000 películas"),
+            width="stretch",
+            key="large_simple_plot",
+        )
+        large_pred = predict_simple(df_large[SIMPLE_FEATURE], st.session_state.manual_gd_m, st.session_state.manual_gd_b)
+        large_metrics = simple_metrics(df_large[MANUAL_MOVIE_TARGET], large_pred)
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Dataset": "6 películas", "RMSE": gd_metrics["rmse"], "MSE": gd_metrics["mse"]},
+                    {"Dataset": "1000 películas", "RMSE": large_metrics["rmse"], "MSE": large_metrics["mse"]},
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    questions(["¿Por qué ya no conviene hacerlo a mano?", "¿Qué parte del proceso sigue siendo la misma?", "¿Qué ventaja tiene que la computadora repita miles de veces?"])
+
+    section("10. Regresión lineal múltiple manual conceptual")
+    df_multi = st.session_state.get("manual_large_df", generate_large_movie_dataset(1000, 42))
+    X_norm, means, stds, norm_stats = normalize_features(df_multi, MULTIPLE_FEATURES)
+    y_multi = df_multi[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+    if "manual_multi_weights" not in st.session_state:
+        st.session_state.manual_multi_weights = np.zeros(len(MULTIPLE_FEATURES))
+        st.session_state.manual_multi_bias = float(y_multi.mean())
+        st.session_state.manual_multi_history = []
+    st.code(
+        "rating_predicho = b\n"
+        "+ w1 * reseñas_positivas_pct\n"
+        "+ w2 * popularidad\n"
+        "+ w3 * presupuesto_millones\n"
+        "+ w4 * experiencia_director"
+    )
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Variable": MULTIPLE_FEATURES,
+                "Peso": [f"w{idx + 1}" for idx in range(len(MULTIPLE_FEATURES))],
+                "Interpretación": ["cuánto empuja el rating"] * len(MULTIPLE_FEATURES),
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    multi_lr = st.slider("learning_rate múltiple", 0.000001, 0.1, 0.03, format="%.6f", key="manual_multi_lr")
+    if st.button("Entrenar regresión múltiple"):
+        weights, bias, hist, stable = train_multiple_steps(
+            X_norm,
+            y_multi,
+            st.session_state.manual_multi_weights,
+            st.session_state.manual_multi_bias,
+            multi_lr,
+            600,
+            st.session_state.manual_multi_history,
+        )
+        if stable:
+            st.session_state.manual_multi_weights = weights
+            st.session_state.manual_multi_bias = bias
+            st.session_state.manual_multi_history = hist
+            st.rerun()
+        else:
+            st.warning("La regresión múltiple se volvió inestable. Bajá el learning rate.")
+    multi_pred = predict_multiple(X_norm, st.session_state.manual_multi_weights, st.session_state.manual_multi_bias)
+    multi_mse = compute_mse(y_multi, multi_pred)
+    mc = st.columns(4)
+    mc[0].metric("Bias", f"{st.session_state.manual_multi_bias:.4f}")
+    mc[1].metric("MSE", f"{multi_mse:.4f}")
+    mc[2].metric("RMSE", f"{np.sqrt(multi_mse):.4f}")
+    mc[3].metric("Iteraciones", len(st.session_state.manual_multi_history))
+    st.dataframe(
+        pd.DataFrame({"Variable": MULTIPLE_FEATURES, "Peso actual": st.session_state.manual_multi_weights}),
+        width="stretch",
+        hide_index=True,
+    )
+    st.plotly_chart(history_line(st.session_state.manual_multi_history, "mse", "Historial de error múltiple"), width="stretch", key="multi_mse_history")
+    st.write("La idea es la misma que con una variable. La diferencia es que ahora el modelo ajusta varios pesos al mismo tiempo.")
+
+    section("11. Normalización visual")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Variable": MULTIPLE_FEATURES,
+                "Escala original": ["0 a 100", "0 a 100", "1 a 300", "0 a 40"],
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    st.write("Si una variable tiene números mucho más grandes, puede afectar el entrenamiento. Normalizar ayuda a ponerlas en escalas comparables.")
+    st.dataframe(norm_stats, width="stretch", hide_index=True)
+    questions(["¿Qué variable tenía la escala más grande?", "¿Por qué presupuesto puede dominar si no se normaliza?", "¿Qué significa que después de normalizar la media sea cercana a 0?"])
+
+    section("12. Comparación con scikit-learn")
+    st.dataframe(sklearn_comparison(df_multi, multi_pred), width="stretch", hide_index=True)
+    st.write(
+        "Lo que hicimos manualmente es una versión educativa. scikit-learn hace operaciones parecidas, "
+        "pero más optimizadas y listas para trabajar con muchos datos."
+    )
+
+    section("13. Mini quiz")
+    manual_quiz()
+
+    section("14. Retos finales")
+    retos = [
+        ("Reto 1", "Ajustá manualmente m y b hasta reducir el RMSE."),
+        ("Reto 2", "Probá un learning rate muy pequeño. ¿Qué pasa con el error?"),
+        ("Reto 3", "Probá un learning rate grande. ¿El error baja o se vuelve inestable?"),
+        ("Reto 4", "Entrená con 5 películas y luego con 1000. ¿Qué cambia y qué se mantiene igual?"),
+        ("Reto 5", "Entrená regresión múltiple. ¿Qué variable tiene el peso más fuerte?"),
+        ("Reto 6", "Compará tu modelo manual con scikit-learn. ¿Qué tan cerca quedaron?"),
+    ]
+    reto_cols = st.columns(2)
+    for idx, (title, text) in enumerate(retos):
+        with reto_cols[idx % 2]:
+            done = st.checkbox(title, key=f"manual_lr_reto_{idx}")
+            st.caption(text if not done else f"Completado. {text}")
+
+
+def closed_form_values(df_manual: pd.DataFrame) -> dict:
+    x = df_manual[SIMPLE_FEATURE].to_numpy(dtype=float)
+    y = df_manual[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+    n = len(df_manual)
+    sum_x = float(x.sum())
+    sum_y = float(y.sum())
+    sum_xy = float((x * y).sum())
+    sum_x2 = float((x**2).sum())
+    numerator = n * sum_xy - sum_x * sum_y
+    denominator = n * sum_x2 - sum_x**2
+    m = numerator / denominator
+    x_mean = sum_x / n
+    y_mean = sum_y / n
+    b = y_mean - m * x_mean
+    return {
+        "n": n,
+        "sum_x": sum_x,
+        "sum_y": sum_y,
+        "sum_xy": sum_xy,
+        "sum_x2": sum_x2,
+        "numerator": numerator,
+        "denominator": denominator,
+        "m": m,
+        "x_mean": x_mean,
+        "y_mean": y_mean,
+        "b": b,
+    }
+
+
+def simple_manual_table(df_manual: pd.DataFrame, include_xy=False, include_x2=False, include_pred=False, include_error=False, m=None, b=None) -> pd.DataFrame:
+    out = df_manual[["pelicula", SIMPLE_FEATURE, MANUAL_MOVIE_TARGET]].rename(
+        columns={SIMPLE_FEATURE: "x", MANUAL_MOVIE_TARGET: "y real"}
+    )
+    x = df_manual[SIMPLE_FEATURE].to_numpy(dtype=float)
+    y = df_manual[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+    if include_xy:
+        out["x*y"] = x * y
+    if include_x2:
+        out["x²"] = x**2
+    if include_pred and m is not None and b is not None:
+        pred = predict_simple(x, m, b)
+        out["y predicho"] = pred
+        if include_error:
+            error = y - pred
+            out["error"] = error
+            out["|error|"] = np.abs(error)
+            out["error²"] = error**2
+    return out
+
+
+def scaled_movie_dataset(n_rows: int, random_state: int = 42) -> pd.DataFrame:
+    if n_rows == 10:
+        return small_manual_movie_dataset()[[SIMPLE_FEATURE, "popularidad", "presupuesto_millones", MANUAL_MOVIE_TARGET]].copy()
+    return generate_large_movie_dataset(n_rows, random_state)[[SIMPLE_FEATURE, "popularidad", "presupuesto_millones", MANUAL_MOVIE_TARGET]].copy()
+
+
+def plot_closed_line(df_manual: pd.DataFrame, m: float, b: float, show_errors: bool, title: str) -> go.Figure:
+    plot_df = df_manual.copy()
+    plot_df["rating_predicho"] = predict_simple(plot_df[SIMPLE_FEATURE], m, b)
+    x_line = np.linspace(plot_df[SIMPLE_FEATURE].min(), plot_df[SIMPLE_FEATURE].max(), 160)
+    y_line = predict_simple(x_line, m, b)
+    hover = "pelicula" if "pelicula" in plot_df.columns else None
+    fig = px.scatter(
+        plot_df,
+        x=SIMPLE_FEATURE,
+        y=MANUAL_MOVIE_TARGET,
+        hover_name=hover,
+        opacity=0.75,
+        title=title,
+        color_discrete_sequence=["#457b9d"],
+    )
+    fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines", name="línea del modelo", line=dict(color="#e76f51", width=3)))
+    if show_errors:
+        rows = plot_df if len(plot_df) <= 80 else plot_df.sample(80, random_state=7)
+        for _, row in rows.iterrows():
+            fig.add_trace(
+                go.Scatter(
+                    x=[row[SIMPLE_FEATURE], row[SIMPLE_FEATURE]],
+                    y=[row[MANUAL_MOVIE_TARGET], row["rating_predicho"]],
+                    mode="lines",
+                    showlegend=False,
+                    line=dict(color="#111827", dash="dot", width=1),
+                    hoverinfo="skip",
+                )
+            )
+    fig.update_layout(height=430, margin=dict(l=20, r=20, t=55, b=20), yaxis_title="rating_real")
+    return fig
+
+
+def metric_cards(values: list[tuple[str, str, str | None]]) -> None:
+    cols = st.columns(len(values))
+    for col, (label, value, help_text) in zip(cols, values):
+        col.metric(label, value, help=help_text)
+
+
+def render_guided_quiz() -> None:
+    quiz = [
+        ("¿Qué representa x?", ["La variable de entrada", "El error", "El intercepto"], "La variable de entrada"),
+        ("¿Qué representa y?", ["El valor real que queremos predecir", "La pendiente", "El número de filas"], "El valor real que queremos predecir"),
+        ("¿Qué representa m?", ["La pendiente de la línea", "El nombre de la película", "La suma de errores"], "La pendiente de la línea"),
+        ("¿Qué representa b?", ["El intercepto", "La variable objetivo", "La cantidad de datos"], "El intercepto"),
+        ("¿Qué es el error?", ["La diferencia entre lo real y lo predicho", "El número de variables", "La suma de x"], "La diferencia entre lo real y lo predicho"),
+        ("¿Qué intenta hacer el entrenamiento?", ["Reducir el error ajustando parámetros", "Cambiar los títulos de las películas", "Eliminar la columna y"], "Reducir el error ajustando parámetros"),
+        ("¿Por qué usamos la computadora con muchos datos?", ["Porque repite operaciones matemáticas muchas veces y rápido", "Porque adivina", "Porque no necesita datos"], "Porque repite operaciones matemáticas muchas veces y rápido"),
+    ]
+    score = 0
+    for idx, (prompt, options, correct) in enumerate(quiz, start=1):
+        answer = st.radio(f"Pregunta {idx}: {prompt}", options, key=f"guided_lr_quiz_{idx}")
+        score += int(answer == correct)
+    st.metric("Puntaje final", f"{score}/{len(quiz)}")
+
+
+def render_movie_regression_section() -> None:
+    st.header("Regresión lineal manual: de la tabla al modelo")
+    st.info(
+        "Primero lo hacemos a mano con pocos datos. Después vemos que la computadora hace el mismo tipo de operaciones, "
+        "pero miles o millones de veces."
+    )
+
+    st.session_state.guided_lr_step = 10
+    reveal_flags = [
+        "guided_lr_show_xy",
+        "guided_lr_show_x2",
+        "guided_lr_show_sums",
+        "guided_lr_show_m",
+        "guided_lr_show_xmean",
+        "guided_lr_show_ymean",
+        "guided_lr_show_b",
+        "guided_lr_show_pred",
+        "guided_lr_show_error",
+        "guided_lr_show_abs",
+        "guided_lr_show_sq",
+        "guided_lr_show_metrics",
+    ]
+    for flag in reveal_flags:
+        st.session_state.setdefault(flag, False)
+    if st.button("Mostrar todos los cálculos", key="manual_lr_show_all"):
+        for flag in reveal_flags:
+            st.session_state[flag] = True
+        st.rerun()
+    if st.button("Reiniciar cálculos interactivos", key="manual_lr_reset_all"):
+        for key in list(st.session_state.keys()):
+            if key.startswith("guided_lr_") or key.startswith("guided_multi_"):
+                del st.session_state[key]
+        st.rerun()
+
+    df_small = small_manual_movie_dataset()
+    vals = closed_form_values(df_small)
+    x = df_small[SIMPLE_FEATURE].to_numpy(dtype=float)
+    y = df_small[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+
+    if st.session_state.guided_lr_step >= 1:
+        section("Paso 1. Ver datos")
+        st.write("Cada fila es una película. Queremos encontrar una fórmula que use las reseñas positivas para estimar el rating.")
+        st.dataframe(df_small, width="stretch", hide_index=True)
+        questions(["¿Parece que cuando suben las reseñas también sube el rating?", "¿Crees que se puede dibujar una línea que aproxime estos datos?", "¿Crees que la línea será perfecta?"])
+
+    if st.session_state.guided_lr_step >= 2:
+        section("Paso 2. Calcular columnas auxiliares")
+        st.write("Para la regresión simple usamos `x`, `y`, `x*y` y `x²`.")
+        if st.button("Calcular x*y", key="guided_lr_btn_xy"):
+            st.session_state.guided_lr_show_xy = True
+        if st.button("Calcular x²", key="guided_lr_btn_x2"):
+            st.session_state.guided_lr_show_x2 = True
+        st.dataframe(
+            simple_manual_table(
+                df_small,
+                include_xy=st.session_state.get("guided_lr_show_xy", False),
+                include_x2=st.session_state.get("guided_lr_show_x2", False),
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+        st.write("Estas columnas auxiliares nos sirven para calcular la línea que mejor se ajusta a los datos.")
+        questions(["¿Qué significa x*y?", "¿Qué significa x²?", "¿Por qué necesitamos sumar esas columnas?"])
+
+    if st.session_state.guided_lr_step >= 3:
+        section("Paso 3. Calcular sumatorias")
+        if st.button("Calcular sumatorias", key="guided_lr_btn_sums"):
+            st.session_state.guided_lr_show_sums = True
+        if st.session_state.get("guided_lr_show_sums", False):
+            metric_cards(
+                [
+                    ("n", f"{vals['n']}", "cantidad de datos"),
+                    ("Σx", f"{vals['sum_x']:.1f}", "suma de reseñas"),
+                    ("Σy", f"{vals['sum_y']:.1f}", "suma de ratings"),
+                    ("Σxy", f"{vals['sum_xy']:.1f}", "suma de x*y"),
+                    ("Σx²", f"{vals['sum_x2']:.1f}", "suma de x²"),
+                ]
+            )
+        st.write("Las sumatorias resumen toda la tabla en pocos números. Con esos números calculamos la pendiente y el intercepto.")
+
+    if st.session_state.guided_lr_step >= 4:
+        section("Paso 4. Calcular pendiente e intercepto")
+        st.latex(r"m = \frac{n\Sigma xy - \Sigma x \Sigma y}{n\Sigma x^2 - (\Sigma x)^2}")
+        if st.button("Calcular pendiente m", key="guided_lr_btn_m"):
+            st.session_state.guided_lr_show_m = True
+        if st.session_state.get("guided_lr_show_m", False):
+            st.write(f"Numerador = n * suma_xy - suma_x * suma_y = {vals['numerator']:.4f}")
+            st.write(f"Denominador = n * suma_x2 - suma_x² = {vals['denominator']:.4f}")
+            st.metric("Pendiente m", f"{vals['m']:.5f}")
+        st.latex(r"b = \bar{y} - m\bar{x}")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("Calcular x promedio", key="guided_lr_btn_xmean"):
+            st.session_state.guided_lr_show_xmean = True
+        if c2.button("Calcular y promedio", key="guided_lr_btn_ymean"):
+            st.session_state.guided_lr_show_ymean = True
+        if c3.button("Calcular intercepto b", key="guided_lr_btn_b"):
+            st.session_state.guided_lr_show_b = True
+        mparts = []
+        if st.session_state.get("guided_lr_show_xmean", False):
+            mparts.append(("x̄", f"{vals['x_mean']:.3f}", "Σx / n"))
+        if st.session_state.get("guided_lr_show_ymean", False):
+            mparts.append(("ȳ", f"{vals['y_mean']:.3f}", "Σy / n"))
+        if st.session_state.get("guided_lr_show_b", False):
+            mparts.append(("b", f"{vals['b']:.3f}", "intercepto"))
+        if mparts:
+            metric_cards(mparts)
+        st.write("La pendiente indica cuánto cambia el rating cuando suben las reseñas positivas en una unidad.")
+        questions(["Si m es positiva, ¿qué significa?", "Si m fuera negativa, ¿qué significaría?"])
+
+    if st.session_state.guided_lr_step >= 5:
+        section("Paso 5. Dibujar la línea")
+        st.metric("Modelo final", f"rating_predicho = {vals['m']:.5f} * reseñas_positivas_pct + {vals['b']:.3f}")
+        st.write("Esta es nuestra primera versión del modelo: una fórmula matemática que convierte reseñas positivas en rating estimado.")
+        st.plotly_chart(plot_closed_line(df_small, vals["m"], vals["b"], False, "Ajuste de una línea recta a los datos"), width="stretch", key="guided_line_closed")
+        questions(["¿La línea pasa exactamente por todos los puntos?", "¿Qué puntos están más lejos de la línea?", "¿La línea parece representar la tendencia general?"])
+
+    if st.session_state.guided_lr_step >= 6:
+        section("Paso 6. Calcular predicciones")
+        col_a, col_b, col_c, col_d = st.columns(4)
+        if col_a.button("Revelar predicción", key="guided_lr_btn_pred"):
+            st.session_state.guided_lr_show_pred = True
+        if col_b.button("Revelar error", key="guided_lr_btn_error"):
+            st.session_state.guided_lr_show_error = True
+        if col_c.button("Revelar error absoluto", key="guided_lr_btn_abs"):
+            st.session_state.guided_lr_show_abs = True
+        if col_d.button("Revelar error cuadrado", key="guided_lr_btn_sq"):
+            st.session_state.guided_lr_show_sq = True
+        pred = predict_simple(x, vals["m"], vals["b"])
+        table = simple_manual_table(df_small, include_pred=st.session_state.get("guided_lr_show_pred", False), m=vals["m"], b=vals["b"])
+        if st.session_state.get("guided_lr_show_error", False) and "y predicho" in table:
+            table["error"] = y - pred
+        if st.session_state.get("guided_lr_show_abs", False) and "y predicho" in table:
+            table["|error|"] = np.abs(y - pred)
+        if st.session_state.get("guided_lr_show_sq", False) and "y predicho" in table:
+            table["error²"] = (y - pred) ** 2
+        st.dataframe(table, width="stretch", hide_index=True)
+        st.write("El error nos dice qué tanto se equivocó el modelo en cada película.")
+
+    if st.session_state.guided_lr_step >= 7:
+        section("Paso 7. Calcular errores")
+        if st.button("Calcular métricas de error", key="guided_lr_btn_metrics"):
+            st.session_state.guided_lr_show_metrics = True
+        pred = predict_simple(x, vals["m"], vals["b"])
+        metrics = simple_metrics(y, pred)
+        if st.session_state.get("guided_lr_show_metrics", False):
+            metric_cards(
+                [
+                    ("MAE", f"{metrics['mae']:.3f}", "En promedio, cuántos puntos se equivoca."),
+                    ("MSE", f"{metrics['mse']:.3f}", "Promedio de errores al cuadrado."),
+                    ("RMSE", f"{metrics['rmse']:.3f}", "Error típico en unidades de rating."),
+                ]
+            )
+        st.plotly_chart(plot_closed_line(df_small, vals["m"], vals["b"], True, "Errores como distancias verticales"), width="stretch", key="guided_error_lines")
+        st.write("Cada línea vertical muestra cuánto se equivocó el modelo para esa película.")
+        questions(["¿Cuál métrica es más fácil de interpretar?", "Si RMSE = 0.4, ¿qué significa?", "¿Un error de 0 sería realista?", "¿Qué película tiene mayor error?"])
+
+    if st.session_state.guided_lr_step >= 8:
+        section("Paso 8. Ajustar manualmente")
+        st.write("Ahora intentá ajustar la línea manualmente para reducir el RMSE.")
+        manual_m = st.slider("pendiente m", -0.2, 0.2, float(vals["m"]), 0.001, key="guided_manual_m")
+        manual_b = st.slider("intercepto b", 0.0, 10.0, float(vals["b"]), 0.05, key="guided_manual_b")
+        manual_pred = predict_simple(x, manual_m, manual_b)
+        manual_metrics = simple_metrics(y, manual_pred)
+        metric_cards(
+            [
+                ("MAE", f"{manual_metrics['mae']:.3f}", None),
+                ("MSE", f"{manual_metrics['mse']:.3f}", None),
+                ("RMSE", f"{manual_metrics['rmse']:.3f}", None),
+            ]
+        )
+        if manual_metrics["rmse"] > 0.8:
+            st.warning("La línea todavía está lejos.")
+        elif manual_metrics["rmse"] > 0.35:
+            st.info("Vas mejorando.")
+        else:
+            st.success("Buen ajuste.")
+        st.plotly_chart(plot_closed_line(df_small, manual_m, manual_b, True, "Ajuste manual de m y b"), width="stretch", key="guided_manual_plot")
+        questions(["¿Qué pasa si subís demasiado m?", "¿Qué pasa si bajás mucho b?", "¿Podés reducir el error manualmente?", "¿Por qué hacerlo a mano se vuelve difícil?"])
+
+    if st.session_state.guided_lr_step >= 9:
+        section("Paso 9. Entrenar automáticamente")
+        st.write("La computadora también puede aprender ajustando m y b poco a poco. A esto se le llama gradient descent.")
+        st.latex(r"y_{pred}=m x+b")
+        st.latex(r"dm=promedio(2 \cdot error \cdot x), \quad db=promedio(2 \cdot error)")
+        if "guided_lr_gd_m" not in st.session_state:
+            st.session_state.guided_lr_gd_m = 0.03
+            st.session_state.guided_lr_gd_b = 3.0
+            st.session_state.guided_lr_gd_history = []
+        lr = st.slider("learning_rate", 0.000001, 0.01, 0.0001, format="%.6f", key="guided_lr_rate")
+        current_pred = predict_simple(x, st.session_state.guided_lr_gd_m, st.session_state.guided_lr_gd_b)
+        dm, db = compute_gradients_simple(x, y, current_pred)
+        new_m, new_b = update_simple_params(st.session_state.guided_lr_gd_m, st.session_state.guided_lr_gd_b, dm, db, lr)
+        new_pred = predict_simple(x, new_m, new_b)
+        iter_row = pd.DataFrame(
+            [
+                {
+                    "iteración": len(st.session_state.guided_lr_gd_history) + 1,
+                    "m anterior": st.session_state.guided_lr_gd_m,
+                    "b anterior": st.session_state.guided_lr_gd_b,
+                    "dm": dm,
+                    "db": db,
+                    "m nuevo": new_m,
+                    "b nuevo": new_b,
+                    "MSE anterior": compute_mse(y, current_pred),
+                    "MSE nuevo": compute_mse(y, new_pred),
+                }
+            ]
+        )
+        st.dataframe(iter_row, width="stretch", hide_index=True)
+        g1, g2, g3, g4 = st.columns(4)
+        run_steps = 0
+        if g1.button("Siguiente iteración", key="guided_lr_btn_next_iter"):
+            run_steps = 1
+        if g2.button("Entrenar 10 iteraciones", key="guided_lr_btn_train_10"):
+            run_steps = 10
+        if g3.button("Entrenar 100 iteraciones", key="guided_lr_btn_train_100"):
+            run_steps = 100
+        if g4.button("Entrenar 1000 iteraciones", key="guided_lr_btn_train_1000"):
+            run_steps = 1000
+        if st.button("Reiniciar entrenamiento", key="guided_lr_btn_reset_simple"):
+            st.session_state.guided_lr_gd_m = 0.03
+            st.session_state.guided_lr_gd_b = 3.0
+            st.session_state.guided_lr_gd_history = []
+            st.rerun()
+        if run_steps:
+            m2, b2, hist, stable = train_simple_steps(
+                x,
+                y,
+                st.session_state.guided_lr_gd_m,
+                st.session_state.guided_lr_gd_b,
+                lr,
+                run_steps,
+                st.session_state.guided_lr_gd_history,
+            )
+            if stable:
+                st.session_state.guided_lr_gd_m = m2
+                st.session_state.guided_lr_gd_b = b2
+                st.session_state.guided_lr_gd_history = hist
+                st.rerun()
+            else:
+                st.warning("El MSE se volvió NaN, infinito o demasiado grande. Bajá el learning rate.")
+        gd_pred = predict_simple(x, st.session_state.guided_lr_gd_m, st.session_state.guided_lr_gd_b)
+        gd_metrics = simple_metrics(y, gd_pred)
+        metric_cards(
+            [
+                ("Iteración actual", f"{len(st.session_state.guided_lr_gd_history)}", None),
+                ("m actual", f"{st.session_state.guided_lr_gd_m:.5f}", None),
+                ("b actual", f"{st.session_state.guided_lr_gd_b:.4f}", None),
+                ("MSE actual", f"{gd_metrics['mse']:.4f}", None),
+                ("RMSE actual", f"{gd_metrics['rmse']:.4f}", None),
+            ]
+        )
+        h1, h2 = st.columns(2)
+        h1.plotly_chart(history_line(st.session_state.guided_lr_gd_history, "mse", "MSE por iteración"), width="stretch", key="guided_mse_hist")
+        h2.plotly_chart(history_line(st.session_state.guided_lr_gd_history, "rmse", "RMSE por iteración"), width="stretch", key="guided_rmse_hist")
+        h3, h4 = st.columns(2)
+        h3.plotly_chart(history_line(st.session_state.guided_lr_gd_history, "m", "m por iteración"), width="stretch", key="guided_m_hist")
+        h4.plotly_chart(history_line(st.session_state.guided_lr_gd_history, "b", "b por iteración"), width="stretch", key="guided_b_hist")
+        questions(["¿El error baja con las iteraciones?", "¿Siempre baja perfectamente?", "¿Qué pasa si el learning rate es muy alto?", "¿Qué pasa si es muy bajo?"])
+
+    if st.session_state.guided_lr_step >= 10:
+        section("Paso 10. Escalar a miles de datos")
+        st.write("Con 10 filas podemos revisar los cálculos. Con 5000 sería imposible hacerlo a mano, pero la computadora repite las mismas operaciones.")
+        n_rows = st.radio("Número de películas sintéticas", [10, 100, 1000, 5000], horizontal=True, key="guided_scale_rows")
+        df_scale = scaled_movie_dataset(int(n_rows), 42)
+        vals_scale = closed_form_values(
+            df_scale.rename(columns={SIMPLE_FEATURE: SIMPLE_FEATURE, MANUAL_MOVIE_TARGET: MANUAL_MOVIE_TARGET}).assign(pelicula="")
+        )
+        scale_pred = predict_simple(df_scale[SIMPLE_FEATURE], vals_scale["m"], vals_scale["b"])
+        scale_metrics = simple_metrics(df_scale[MANUAL_MOVIE_TARGET], scale_pred)
+        metric_cards(
+            [
+                ("Cantidad de datos", f"{len(df_scale):,}", None),
+                ("MAE", f"{scale_metrics['mae']:.3f}", None),
+                ("RMSE", f"{scale_metrics['rmse']:.3f}", None),
+            ]
+        )
+        st.plotly_chart(
+            plot_closed_line(df_scale.assign(pelicula=""), vals_scale["m"], vals_scale["b"], len(df_scale) <= 100, f"Línea ajustada con {len(df_scale):,} películas"),
+            width="stretch",
+            key="guided_scale_plot",
+        )
+        questions(["¿La nube de puntos se ve más clara con más datos?", "¿El error cambia?", "¿La línea se vuelve más estable?", "¿Qué parte del proceso es igual con 10 y con 5000 datos?"])
+
+    section("Ahora con 3 variables")
+    df_multi = scaled_movie_dataset(1000, 42)
+    st.write("Ahora ya no movemos una línea en 2D. El modelo aprende varios pesos al mismo tiempo.")
+    st.latex(r"rating_{predicho}=b+w_1x_1+w_2x_2+w_3x_3")
+    st.dataframe(
+        df_small[["pelicula", SIMPLE_FEATURE, "popularidad", "presupuesto_millones", MANUAL_MOVIE_TARGET]].rename(
+            columns={SIMPLE_FEATURE: "x1", "popularidad": "x2", "presupuesto_millones": "x3", MANUAL_MOVIE_TARGET: "y"}
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    st.info("Una predicción fila por fila se calcula como: b + w1*x1 + w2*x2 + w3*x3.")
+
+    section("Normalización para las 3 variables")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Variable": [SIMPLE_FEATURE, "popularidad", "presupuesto_millones"],
+                "rango aproximado": ["0 a 100", "0 a 100", "1 a 300"],
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    use_norm = st.checkbox("Normalizar variables", value=True, key="guided_multi_use_norm")
+    X_norm, means, stds, norm_stats = normalize_features(df_multi, [SIMPLE_FEATURE, "popularidad", "presupuesto_millones"])
+    st.dataframe(norm_stats if use_norm else df_multi[[SIMPLE_FEATURE, "popularidad", "presupuesto_millones"]].head(10), width="stretch", hide_index=True)
+    X_multi = X_norm if use_norm else df_multi[[SIMPLE_FEATURE, "popularidad", "presupuesto_millones"]].astype(float)
+    y_multi = df_multi[MANUAL_MOVIE_TARGET].to_numpy(dtype=float)
+
+    section("Regresión múltiple con gradient descent")
+    if "guided_multi_weights" not in st.session_state or len(st.session_state.guided_multi_weights) != 3:
+        st.session_state.guided_multi_weights = np.zeros(3)
+        st.session_state.guided_multi_bias = float(y_multi.mean())
+        st.session_state.guided_multi_history = []
+    multi_lr = st.slider("learning_rate múltiple", 0.000001, 0.1, 0.03, format="%.6f", key="guided_multi_lr")
+    multi_pred = predict_multiple(X_multi, st.session_state.guided_multi_weights, st.session_state.guided_multi_bias)
+    dw, db = compute_gradients_multiple(X_multi, y_multi, multi_pred)
+    next_w, next_bias = update_multiple_params(st.session_state.guided_multi_weights, st.session_state.guided_multi_bias, dw, db, multi_lr)
+    next_multi_pred = predict_multiple(X_multi, next_w, next_bias)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "w1": st.session_state.guided_multi_weights[0],
+                    "w2": st.session_state.guided_multi_weights[1],
+                    "w3": st.session_state.guided_multi_weights[2],
+                    "bias": st.session_state.guided_multi_bias,
+                    "gradiente w1": dw[0],
+                    "gradiente w2": dw[1],
+                    "gradiente w3": dw[2],
+                    "gradiente bias": db,
+                    "MSE actual": compute_mse(y_multi, multi_pred),
+                    "MSE siguiente": compute_mse(y_multi, next_multi_pred),
+                }
+            ]
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    mb1, mb2, mb3, mb4 = st.columns(4)
+    multi_steps = 0
+    if mb1.button("Siguiente iteración múltiple", key="guided_multi_btn_next"):
+        multi_steps = 1
+    if mb2.button("Entrenar 100 iteraciones", key="guided_multi_btn_train_100"):
+        multi_steps = 100
+    if mb3.button("Entrenar 1000 iteraciones", key="guided_multi_btn_train_1000"):
+        multi_steps = 1000
+    if mb4.button("Reiniciar modelo múltiple", key="guided_multi_btn_reset"):
+        st.session_state.guided_multi_weights = np.zeros(3)
+        st.session_state.guided_multi_bias = float(y_multi.mean())
+        st.session_state.guided_multi_history = []
+        st.rerun()
+    if multi_steps:
+        weights, bias, hist, stable = train_multiple_steps(
+            X_multi,
+            y_multi,
+            st.session_state.guided_multi_weights,
+            st.session_state.guided_multi_bias,
+            multi_lr,
+            multi_steps,
+            st.session_state.guided_multi_history,
+        )
+        if stable:
+            st.session_state.guided_multi_weights = weights
+            st.session_state.guided_multi_bias = bias
+            st.session_state.guided_multi_history = hist
+            st.rerun()
+        else:
+            st.warning("El MSE se volvió NaN, infinito o demasiado grande. Bajá el learning rate o activá normalización.")
+    multi_pred = predict_multiple(X_multi, st.session_state.guided_multi_weights, st.session_state.guided_multi_bias)
+    multi_mse = compute_mse(y_multi, multi_pred)
+    metric_cards(
+        [
+            ("w1", f"{st.session_state.guided_multi_weights[0]:.4f}", SIMPLE_FEATURE),
+            ("w2", f"{st.session_state.guided_multi_weights[1]:.4f}", "popularidad"),
+            ("w3", f"{st.session_state.guided_multi_weights[2]:.4f}", "presupuesto"),
+            ("bias", f"{st.session_state.guided_multi_bias:.4f}", None),
+            ("RMSE", f"{np.sqrt(multi_mse):.4f}", None),
+        ]
+    )
+    mh1, mh2 = st.columns(2)
+    mh1.plotly_chart(history_line(st.session_state.guided_multi_history, "mse", "MSE múltiple"), width="stretch", key="guided_multi_mse")
+    mh2.plotly_chart(history_line(st.session_state.guided_multi_history, "rmse", "RMSE múltiple"), width="stretch", key="guided_multi_rmse")
+    wh1, wh2 = st.columns(2)
+    wh1.plotly_chart(history_line(st.session_state.guided_multi_history, "w_1", "w1 por iteración"), width="stretch", key="guided_w1_hist")
+    wh2.plotly_chart(history_line(st.session_state.guided_multi_history, "bias", "bias por iteración"), width="stretch", key="guided_bias_hist")
+    questions(["¿Qué peso parece más importante?", "¿El presupuesto ayuda mucho o poco?", "¿El error baja más que con una sola variable?", "¿Qué pasa si no normalizamos?"])
+
+    section("Comparación final con sklearn")
+    compare_df = df_multi[[SIMPLE_FEATURE, "popularidad", "presupuesto_millones", MANUAL_MOVIE_TARGET]].rename(
+        columns={"presupuesto_millones": "presupuesto_millones"}
+    )
+    compare_df = compare_df.assign(experiencia_director=0.0)
+    manual_for_compare = predict_multiple(
+        normalize_features(compare_df, MULTIPLE_FEATURES)[0],
+        np.array([st.session_state.guided_multi_weights[0], st.session_state.guided_multi_weights[1], st.session_state.guided_multi_weights[2], 0.0]),
+        st.session_state.guided_multi_bias,
+    )
+    st.dataframe(sklearn_comparison(compare_df, manual_for_compare), width="stretch", hide_index=True)
+    st.write("scikit-learn hace esto de forma optimizada. Pero la idea base es la misma: usar datos, calcular errores y encontrar parámetros que reduzcan el error.")
+
+    section("Mini quiz final")
+    render_guided_quiz()
+
+    section("Retos para la estudiante")
+    retos = [
+        ("Reto 1", "Calcula manualmente xy para una fila. ¿Coincide con la app?"),
+        ("Reto 2", "Calcula manualmente x² para una fila. ¿Coincide con la app?"),
+        ("Reto 3", "Mueve m y b para bajar RMSE. ¿Qué combinación te funcionó mejor?"),
+        ("Reto 4", "Entrena 1000 iteraciones. ¿El error bajó?"),
+        ("Reto 5", "Cambia de 10 datos a 5000. ¿Qué cambió?"),
+        ("Reto 6", "Entrena con 3 variables. ¿Bajó el error comparado con una variable?"),
+        ("Reto 7", "Apaga la normalización. ¿Qué pasa con el entrenamiento?"),
+    ]
+    cols = st.columns(2)
+    for idx, (title, text) in enumerate(retos):
+        with cols[idx % 2]:
+            done = st.checkbox(title, key=f"guided_lr_reto_{idx}")
+            st.caption(text if not done else f"Completado. {text}")
+
+
 with st.sidebar:
     st.title("Datos")
     uploaded = st.file_uploader("Cargar CSV de ventas", type=["csv"])
@@ -639,10 +1982,15 @@ st.caption(source_label)
 for warning in dataset_warnings:
     st.warning(warning)
 
-main_lab_tab, main_flow_tab = st.tabs(["Modelo de clasificación", "Flujo de datos del modelo"])
+main_lab_tab, main_flow_tab, movie_regression_tab = st.tabs(
+    ["Modelo de clasificación", "Flujo de datos del modelo", "Regresión lineal hecha a mano"]
+)
 
 with main_flow_tab:
     render_model_data_flow_section()
+
+with movie_regression_tab:
+    render_movie_regression_section()
 
 with main_lab_tab:
     intro_left, intro_right = st.columns([1.2, 1])
